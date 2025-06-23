@@ -1,0 +1,127 @@
+[package]
+name = "tycho-toncenter"
+version = "0.1.0"
+edition = "2024"
+authors = ["Broxus Team"]
+rust-version = "1.85.0"
+repository = "https://github.com/broxus/tycho-"
+license = "MIT OR Apache-2.0"
+
+[dependencies]
+anyhow = "1.0"
+axum = "0.7"
+base64 = "0.22.0"
+bytes = "1.0"
+clap = { version = "4.5", features = ["derive"] }
+everscale-types = { version = "0.1.2", features = ["sync", "base64", "rayon", "models", "rand"] }
+futures-util = "0.3"
+num-bigint = "0.4"
+rand = "0.8"
+scopeguard = "1.0"
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+sha2 = "0.10"
+thiserror = "1.0"
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "sync", "time"] }
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+
+tikv-jemallocator = { version = "0.6.0", features = [
+    "unprefixed_malloc_on_supported_platforms",
+    "background_threads",
+] }
+
+tycho-block-util = { git = "https://github.com/broxus/tycho.git", rev = "a68b6aa58b77c4617bee4562d2ee79362d36e341" }
+tycho-core = { git = "https://github.com/broxus/tycho.git", rev = "a68b6aa58b77c4617bee4562d2ee79362d36e341" }
+tycho-rpc = { git = "https://github.com/broxus/tycho.git", rev = "a68b6aa58b77c4617bee4562d2ee79362d36e341" }
+tycho-util = { git = "https://github.com/broxus/tycho.git", rev = "a68b6aa58b77c4617bee4562d2ee79362d36e341", features = [
+    "cli",
+] }
+
+tycho-vm = { git = "https://github.com/broxus/tycho-vm.git" }
+
+[build-dependencies]
+anyhow = "1.0"
+
+[patch.crates-io]
+everscale-types = { git = "https://github.com/broxus/everscale-types.git", rev = "77458d0b94c5dca09366acd84a904ff7e87d1b3b" }
+
+[patch."https://github.com/broxus/tycho-vm.git"]
+tycho-vm = { git = "https://www.github.com/broxus/tycho-vm.git", rev = "d2332649d53089bc1e89fd16208eb9a91a264ada" }
+
+[workspace.lints.rust]
+future_incompatible = "warn"
+nonstandard_style = "warn"
+rust_2018_idioms = "warn"
+
+[workspace.lints.clippy]
+all = { level = "warn", priority = -1 }
+await_holding_lock = "warn"
+char_lit_as_u8 = "warn"
+checked_conversions = "warn"
+dbg_macro = "warn"
+debug_assert_with_mut_call = "warn"
+disallowed_methods = "warn"
+doc_markdown = "warn"
+empty_enum = "warn"
+enum_glob_use = "warn"
+exit = "warn"
+expl_impl_clone_on_copy = "warn"
+explicit_deref_methods = "warn"
+explicit_into_iter_loop = "warn"
+fallible_impl_from = "warn"
+filter_map_next = "warn"
+flat_map_option = "warn"
+float_cmp_const = "warn"
+fn_params_excessive_bools = "warn"
+from_iter_instead_of_collect = "warn"
+if_let_mutex = "warn"
+implicit_clone = "warn"
+imprecise_flops = "warn"
+inefficient_to_string = "warn"
+invalid_upcast_comparisons = "warn"
+large_digit_groups = "warn"
+large_futures = "warn"
+large_stack_arrays = "warn"
+large_types_passed_by_value = "warn"
+let_unit_value = "warn"
+linkedlist = "warn"
+lossy_float_literal = "warn"
+macro_use_imports = "warn"
+manual_ok_or = "warn"
+map_err_ignore = "warn"
+map_flatten = "warn"
+map_unwrap_or = "warn"
+match_on_vec_items = "warn"
+match_same_arms = "warn"
+match_wild_err_arm = "warn"
+match_wildcard_for_single_variants = "warn"
+mem_forget = "warn"
+missing_enforced_import_renames = "warn"
+mut_mut = "warn"
+mutex_integer = "warn"
+needless_borrow = "warn"
+needless_continue = "warn"
+needless_for_each = "warn"
+option_option = "warn"
+path_buf_push_overwrite = "warn"
+ptr_as_ptr = "warn"
+print_stdout = "warn"
+print_stderr = "warn"
+rc_mutex = "warn"
+ref_option_ref = "warn"
+rest_pat_in_fully_bound_structs = "warn"
+same_functions_in_if_condition = "warn"
+semicolon_if_nothing_returned = "warn"
+string_add_assign = "warn"
+string_add = "warn"
+string_lit_as_bytes = "warn"
+string_to_string = "warn"
+todo = "warn"
+trait_duplication_in_bounds = "warn"
+unimplemented = "warn"
+unnested_or_patterns = "warn"
+unused_self = "warn"
+useless_transmute = "warn"
+verbose_file_reads = "warn"
+zero_sized_map_values = "warn"
