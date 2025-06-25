@@ -17,6 +17,7 @@ everscale-types = { version = "0.1.2", features = ["sync", "base64", "rayon", "m
 futures-util = "0.3"
 num-bigint = "0.4"
 rand = "0.8"
+rusqlite = { version = "0.36.0", features = ["bundled"] }
 scopeguard = "1.0"
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
@@ -25,6 +26,7 @@ thiserror = "1.0"
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "sync", "time"] }
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+bb8 = "0.9"
 
 tikv-jemallocator = { version = "0.6.0", features = [
     "unprefixed_malloc_on_supported_platforms",
@@ -34,11 +36,21 @@ tikv-jemallocator = { version = "0.6.0", features = [
 tycho-block-util = { git = "https://github.com/broxus/tycho.git", rev = "a68b6aa58b77c4617bee4562d2ee79362d36e341" }
 tycho-core = { git = "https://github.com/broxus/tycho.git", rev = "a68b6aa58b77c4617bee4562d2ee79362d36e341" }
 tycho-rpc = { git = "https://github.com/broxus/tycho.git", rev = "a68b6aa58b77c4617bee4562d2ee79362d36e341" }
+tycho-storage = { git = "https://github.com/broxus/tycho.git", rev = "a68b6aa58b77c4617bee4562d2ee79362d36e341" }
 tycho-util = { git = "https://github.com/broxus/tycho.git", rev = "a68b6aa58b77c4617bee4562d2ee79362d36e341", features = [
     "cli",
 ] }
 
 tycho-vm = { git = "https://github.com/broxus/tycho-vm.git" }
+
+[dev-dependencies]
+tycho-util = { git = "https://github.com/broxus/tycho.git", rev = "a68b6aa58b77c4617bee4562d2ee79362d36e341", features = [
+    "cli",
+    "test",
+] }
+tycho-storage = { git = "https://github.com/broxus/tycho.git", rev = "a68b6aa58b77c4617bee4562d2ee79362d36e341", features = [
+    "test",
+] }
 
 [build-dependencies]
 anyhow = "1.0"

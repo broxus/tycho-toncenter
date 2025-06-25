@@ -20,6 +20,7 @@ use tycho_util::cli::metrics::MetricsConfig;
 use tycho_util::futures::JoinTask;
 use tycho_util::serde_helpers::load_json_from_file;
 
+/// Run a Tycho node.
 #[derive(Parser)]
 pub struct Cmd {
     /// dump the template of the zero state config
