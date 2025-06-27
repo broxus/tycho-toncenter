@@ -1,7 +1,7 @@
 use std::sync::OnceLock;
 
 pub mod api;
-pub mod storage;
+pub mod state;
 pub mod util {
     pub mod tonlib_helpers;
 }

@@ -1,5 +1,6 @@
 use std::fmt::Write;
 use std::path::Path;
+use std::time::Instant;
 
 use anyhow::{Context, Result};
 use rusqlite::{Connection, OpenFlags, params_from_iter};
@@ -228,23 +229,65 @@ impl TokensRepo {
         .map_err(Into::into)
     }
 
-    async fn insert_rows_simple<T, F>(&self, rows: Vec<T>, fmt: F) -> Result<usize>
+    async fn insert_rows_simple<T, F>(&self, rows: Vec<T>, mut fmt: F) -> Result<usize>
     where
         T: SqlColumnsRepr + KnownColumnCount + Send + 'static,
-        F: FnOnce(&mut String, String) -> std::fmt::Result + Send + 'static,
+        F: FnMut(&mut String, &str) -> std::fmt::Result + Send + 'static,
     {
-        let values = tuple_list(rows.len(), T::COLUMN_COUNT);
+        let rows_per_batch = SQLITE_MAX_VARIABLE_NUMBER / T::COLUMN_COUNT;
+        let batch_count = rows.len() / rows_per_batch;
+        let tail_len = rows.len() % rows_per_batch;
+
+        let started_at = Instant::now();
+
+        let batch_values = (batch_count > 0)
+            .then(T::batch_params_string)
+            .unwrap_or_default();
+        let tail_values = (tail_len > 0)
+            .then(|| tuple_list(tail_len, T::COLUMN_COUNT))
+            .unwrap_or_default();
+
+        tracing::warn!(
+            elapsed = %humantime::format_duration(started_at.elapsed()),
+            "prepared param list"
+        );
+
         self.writer
             .dispatch(move |conn| {
-                let mut stmt = QueryBuffer::with(|sql| {
-                    fmt(sql, values).unwrap();
-                    tracing::trace!(sql);
-                    conn.prepare(sql)
-                })?;
-                stmt.execute(params_from_iter(
-                    rows.iter().flat_map(|item| item.as_columns_iter()),
-                ))
-                .map_err(Into::into)
+                let tx = conn.transaction()?;
+
+                let mut rows = rows.iter();
+                let mut execute = |n: usize, values: &str| {
+                    let mut stmt = QueryBuffer::with(|sql| {
+                        fmt(sql, values).unwrap();
+                        tracing::warn!(n, "add batch");
+                        tx.prepare(sql)
+                    })?;
+                    stmt.execute(params_from_iter(
+                        rows.by_ref()
+                            .take(n)
+                            .flat_map(|item| item.as_columns_iter()),
+                    ))
+                };
+
+                let mut affected_rows = 0usize;
+                for _ in 0..batch_count {
+                    affected_rows += execute(rows_per_batch, &batch_values)?;
+                }
+                if tail_len > 0 {
+                    affected_rows += execute(tail_len, &tail_values)?;
+                }
+                assert!(rows.next().is_none());
+
+                let started_at = Instant::now();
+                tx.commit()?;
+                tracing::warn!(
+                    elapsed = %humantime::format_duration(started_at.elapsed()),
+                    affected_rows,
+                    "commit",
+                );
+
+                Ok(affected_rows)
             })
             .await
     }
@@ -279,5 +322,177 @@ fn get_version(connection: &Connection) -> Result<Option<(usize, usize, usize)>>
 }
 
 fn prepare_connection(connection: &Connection) -> rusqlite::Result<()> {
-    connection.execute_batch("PRAGMA journal_mode=WAL")
+    connection.execute_batch(
+        "PRAGMA journal_mode=WAL;
+        PRAGMA synchronous=normal;
+        PRAGMA journal_size_limit=6144000;",
+    )
+}
+
+#[cfg(test)]
+mod tests {
+    use std::num::NonZeroUsize;
+
+    use everscale_types::cell::HashBytes;
+    use everscale_types::models::StdAddr;
+    use tycho_storage::StorageContext;
+
+    use super::*;
+
+    fn dumb_addr(byte: u8) -> StdAddr {
+        StdAddr::new(0, HashBytes([byte; 32]))
+    }
+
+    #[tokio::test]
+    async fn can_reopen() -> Result<()> {
+        tycho_util::test::init_logger("can_reopen", "debug");
+
+        let (context, _tmp_dir) = StorageContext::new_temp().await?;
+        let path = context.root_dir().path().join("tokens.db3");
+        _ = TokensRepo::open(&path).await?;
+        _ = TokensRepo::open(path).await?;
+        Ok(())
+    }
+
+    #[tokio::test]
+
+    async fn token_masters_query_works() -> Result<()> {
+        tycho_util::test::init_logger("token_masters_query_works", "trace");
+
+        let (context, _tmp_dir) = StorageContext::new_temp().await?;
+        let path = context.root_dir().path().join("tokens.db3");
+        let repo = TokensRepo::open(path).await?;
+
+        for _ in 0..3 {
+            let result = repo
+                .get_jetton_masters(GetJettonMastersParams {
+                    master_addresses: Some(vec![dumb_addr(0x11), dumb_addr(0x22)]),
+                    admin_addresses: Some(vec![dumb_addr(0x11)]),
+                    limit: NonZeroUsize::new(10).unwrap(),
+                    offset: 0,
+                })
+                .await?;
+            assert!(result.is_empty());
+        }
+
+        let mut to_insert = [0x11, 0x22, 0x33, 0x44, 0x55].map(|addr| JettonMaster {
+            address: dumb_addr(addr),
+            total_supply: (addr as u32 * 123u32).into(),
+            mintable: true,
+            admin_address: Some(dumb_addr(0x22)),
+            jetton_content: None,
+            wallet_code_hash: HashBytes::ZERO,
+            last_transaction_lt: 123,
+            code_hash: HashBytes::ZERO,
+            data_hash: HashBytes::ZERO,
+        });
+        let affected_rows = repo.insert_jetton_masters(to_insert.to_vec()).await?;
+        assert_eq!(affected_rows, to_insert.len());
+        let affected_rows = repo.insert_jetton_masters(to_insert.to_vec()).await?;
+        assert_eq!(affected_rows, 0);
+
+        to_insert[1].last_transaction_lt += 1;
+        let affected_rows = repo.insert_jetton_masters(to_insert.to_vec()).await?;
+        assert_eq!(affected_rows, 1);
+
+        for _ in 0..3 {
+            let result = repo
+                .get_jetton_masters(GetJettonMastersParams {
+                    master_addresses: None,
+                    admin_addresses: None,
+                    limit: NonZeroUsize::new(10).unwrap(),
+                    offset: 0,
+                })
+                .await?;
+            assert_eq!(result, to_insert);
+        }
+
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn token_wallets_query_works() -> Result<()> {
+        tycho_util::test::init_logger("token_wallets_query_works", "trace");
+
+        let (context, _tmp_dir) = StorageContext::new_temp().await?;
+        let path = context.root_dir().path().join("tokens.db3");
+        let repo = TokensRepo::open(path).await?;
+
+        for _ in 0..3 {
+            let result = repo
+                .get_jetton_wallets(GetJettonWalletsParams {
+                    wallet_addresses: None,
+                    owner_addresses: Some(vec![dumb_addr(0x11), dumb_addr(0x22)]),
+                    jetton_addresses: Some(vec![dumb_addr(0x11)]),
+                    limit: NonZeroUsize::new(10).unwrap(),
+                    offset: 0,
+                    exclude_zero_balance: true,
+                    order_by: None,
+                })
+                .await?;
+            assert!(result.is_empty());
+        }
+
+        let mut to_insert = [0x11, 0x22, 0x33, 0x44, 0x55].map(|addr| JettonWallet {
+            address: dumb_addr(addr),
+            balance: (addr as u32 * 123u32).into(),
+            owner: dumb_addr(0x22),
+            jetton: dumb_addr(0x11),
+            last_transaction_lt: 123,
+            code_hash: Some(HashBytes::ZERO),
+            data_hash: Some(HashBytes::ZERO),
+        });
+        let affected_rows = repo.insert_jetton_wallets(to_insert.to_vec()).await?;
+        assert_eq!(affected_rows, to_insert.len());
+        let affected_rows = repo.insert_jetton_wallets(to_insert.to_vec()).await?;
+        assert_eq!(affected_rows, 0);
+
+        to_insert[1].last_transaction_lt += 1;
+        let affected_rows = repo.insert_jetton_wallets(to_insert.to_vec()).await?;
+        assert_eq!(affected_rows, 1);
+
+        for _ in 0..3 {
+            let result = repo
+                .get_jetton_wallets(GetJettonWalletsParams {
+                    wallet_addresses: None,
+                    owner_addresses: None,
+                    jetton_addresses: None,
+                    limit: NonZeroUsize::new(10).unwrap(),
+                    offset: 0,
+                    exclude_zero_balance: true,
+                    order_by: None,
+                })
+                .await?;
+            assert_eq!(result, to_insert);
+        }
+
+        to_insert.reverse();
+        let result = repo
+            .get_jetton_wallets(GetJettonWalletsParams {
+                wallet_addresses: None,
+                owner_addresses: None,
+                jetton_addresses: None,
+                limit: NonZeroUsize::new(10).unwrap(),
+                offset: 0,
+                exclude_zero_balance: true,
+                order_by: Some(OrderJettonWalletsBy::Balance { reverse: true }),
+            })
+            .await?;
+        assert_eq!(result, to_insert);
+
+        let result = repo
+            .get_jetton_wallets(GetJettonWalletsParams {
+                wallet_addresses: None,
+                owner_addresses: Some(vec![dumb_addr(0x22)]),
+                jetton_addresses: None,
+                limit: NonZeroUsize::new(10).unwrap(),
+                offset: 0,
+                exclude_zero_balance: true,
+                order_by: Some(OrderJettonWalletsBy::Balance { reverse: true }),
+            })
+            .await?;
+        assert_eq!(result, to_insert);
+
+        Ok(())
+    }
 }

@@ -13,6 +13,7 @@ use tycho_core::global_config::GlobalConfig;
 use tycho_core::node::{NodeBase, NodeBaseConfig, NodeKeys};
 use tycho_rpc::{RpcConfig, RpcEndpoint, RpcState};
 use tycho_toncenter::api;
+use tycho_toncenter::state::TonCenterRpcState;
 use tycho_util::cli;
 use tycho_util::cli::config::ThreadPoolConfig;
 use tycho_util::cli::logger::LoggerConfig;
@@ -111,7 +112,7 @@ impl Cmd {
 
         // Build RPC.
         let _rpc_task;
-        let (rpc_block_subscriber, rpc_state_subscriber) = {
+        let (ext_rpc_block_subscriber, rpc_block_subscriber, rpc_state_subscriber) = {
             let config = &node_config.rpc;
 
             let rpc_state = RpcState::builder()
@@ -127,9 +128,14 @@ impl Cmd {
                 .nest("/toncenter/v2", api::toncenter_v2::router())
                 .nest("/toncenter/v3", api::toncenter_v3::router());
 
+            let ext_rpc_state =
+                TonCenterRpcState::new(node.storage_context.clone(), rpc_state.clone())
+                    .await
+                    .context("failed to create an extended RPC state")?;
+
             let endpoint = RpcEndpoint::builder()
                 .with_custom_routes(toncenter_routes)
-                .bind(rpc_state.clone())
+                .bind(ext_rpc_state.clone())
                 .await
                 .context("failed to setup RPC server endpoint")?;
 
@@ -141,7 +147,8 @@ impl Cmd {
                 tracing::info!("RPC server stopped");
             });
 
-            rpc_state.split()
+            let (block_subscriber, state_subscriber) = rpc_state.split();
+            (ext_rpc_state, block_subscriber, state_subscriber)
         };
 
         // Build strider.
@@ -160,7 +167,7 @@ impl Cmd {
                     node.core_storage.clone(),
                     (rpc_state_subscriber, ps_subscriber),
                 ),
-                rpc_block_subscriber,
+                (rpc_block_subscriber, ext_rpc_block_subscriber),
                 node.validator_resolver().clone(),
                 MetricsSubscriber,
             )

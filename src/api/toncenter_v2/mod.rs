@@ -33,11 +33,12 @@ use tycho_util::metrics::HistogramGuard;
 use tycho_util::sync::rayon_run;
 
 use self::models::*;
+use crate::state::TonCenterRpcState;
 use crate::util::tonlib_helpers::{StackParser, compute_method_id};
 
 pub mod models;
 
-pub fn router() -> axum::Router<RpcState> {
+pub fn router() -> axum::Router<TonCenterRpcState> {
     axum::Router::new()
         .route("/", post(post_jrpc))
         .route("/jsonRPC", post(post_jrpc))

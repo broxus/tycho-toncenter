@@ -19,10 +19,11 @@ use tycho_rpc::{BriefBlockInfo, RpcSnapshot, RpcState, RpcStateError, Transactio
 use tycho_util::FastHashSet;
 
 use self::models::{Transaction, *};
+use crate::state::TonCenterRpcState;
 
 mod models;
 
-pub fn router() -> axum::Router<RpcState> {
+pub fn router() -> axum::Router<TonCenterRpcState> {
     axum::Router::new()
         .route("/masterchainInfo", get(get_masterchain_info))
         .route("/blocks", get(get_blocks))

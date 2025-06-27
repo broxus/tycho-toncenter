@@ -4,6 +4,7 @@ use std::fmt::Write;
 use everscale_types::cell::HashBytes;
 use everscale_types::models::StdAddr;
 use num_bigint::BigUint;
+use once_cell::race::OnceBox;
 use rusqlite::types::{FromSql, FromSqlError, ToSqlOutput, Value, ValueRef};
 use rusqlite::{Row, RowIndex, ToSql};
 
@@ -25,10 +26,17 @@ macro_rules! row {
             )*
         }
 
-        impl $crate::storage::util::KnownColumnCount for $ident {
+        impl $crate::state::util::KnownColumnCount for $ident {
             const COLUMN_COUNT: usize = const {
-                $crate::storage::util::row!(@field_count { 0 } $($field)*)
+                $crate::state::util::row!(@field_count { 0 } $($field)*)
             };
+
+            fn batch_params_string() -> &'static str {
+                static STR: ::once_cell::race::OnceBox<String> = ::once_cell::race::OnceBox::new();
+                STR.get_or_init(|| {
+                    Box::new($crate::state::util::tuple_list(Self::max_rows_per_batch(), Self::COLUMN_COUNT))
+                })
+            }
         }
 
         impl<'stmt> TryFrom<&::rusqlite::Row<'stmt>> for $ident {
@@ -40,13 +48,13 @@ macro_rules! row {
         }
 
 
-        impl $crate::storage::util::SqlColumnsRepr for $ident {
+        impl $crate::state::util::SqlColumnsRepr for $ident {
             type Iter<'a> = [&'a dyn ::rusqlite::ToSql; Self::COLUMN_COUNT]
             where
                 Self: 'a;
 
             fn as_columns_iter(&self) -> Self::Iter<'_> {
-                [$($crate::storage::util::SqlType::wrap(&self.$field) as &dyn ::rusqlite::ToSql),*]
+                [$($crate::state::util::SqlType::wrap(&self.$field) as &dyn ::rusqlite::ToSql),*]
             }
         }
 
@@ -56,9 +64,9 @@ macro_rules! row {
         Self { $($fields)* }
     };
     (@fields $row:ident { $($fields:tt)* } { $idx:expr } $field:ident $($rest:ident)*) => {
-        $crate::storage::util::row!(@fields $row {
+        $crate::state::util::row!(@fields $row {
             $($fields)*
-            $field: $crate::storage::util::SqlType::get($row, const { $idx })?,
+            $field: $crate::state::util::SqlType::get($row, const { $idx })?,
         } {
             $idx + 1
         } $($rest)*)
@@ -66,7 +74,7 @@ macro_rules! row {
 
     (@field_count { $idx:expr }) => { $idx };
     (@field_count { $idx:expr } $field:ident $($rest:ident)*) => {
-        $crate::storage::util::row!(@field_count { $idx + 1 } $($rest)*)
+        $crate::state::util::row!(@field_count { $idx + 1 } $($rest)*)
     };
 }
 
@@ -181,10 +189,21 @@ pub fn tuple_list(tuple_count: usize, tuple_size: usize) -> String {
     result
 }
 
-pub fn param_list(param_count: usize) -> String {
-    let mut result = "?,".repeat(param_count);
-    result.pop();
-    result
+pub fn param_list(param_count: usize) -> &'static str {
+    static LIST: OnceBox<String> = OnceBox::new();
+
+    assert!(param_count <= SQLITE_MAX_VARIABLE_NUMBER);
+
+    match param_count {
+        0 => "",
+        1 => "?",
+        _ => {
+            let list = LIST
+                .get_or_init(|| Box::new("?,".repeat(SQLITE_MAX_VARIABLE_NUMBER)))
+                .as_str();
+            &list[0..param_count * 2 - 1]
+        }
+    }
 }
 
 // === SQL Columns wrapper ===
@@ -199,6 +218,12 @@ pub trait SqlColumnsRepr {
 
 pub trait KnownColumnCount {
     const COLUMN_COUNT: usize;
+
+    fn max_rows_per_batch() -> usize {
+        SQLITE_MAX_VARIABLE_NUMBER / Self::COLUMN_COUNT
+    }
+
+    fn batch_params_string() -> &'static str;
 }
 
 // === SQL Type wrapper ===
@@ -339,3 +364,5 @@ impl_existing! {
 }
 
 pub const ADDR_BYTES: usize = 33;
+
+pub const SQLITE_MAX_VARIABLE_NUMBER: usize = 32766 / 4;

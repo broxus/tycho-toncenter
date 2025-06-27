@@ -11,11 +11,14 @@ license = "MIT OR Apache-2.0"
 anyhow = "1.0"
 axum = "0.7"
 base64 = "0.22.0"
+bb8 = "0.9"
 bytes = "1.0"
 clap = { version = "4.5", features = ["derive"] }
 everscale-types = { version = "0.1.2", features = ["sync", "base64", "rayon", "models", "rand"] }
 futures-util = "0.3"
+humantime = "2.2"
 num-bigint = "0.4"
+once_cell = "1.14"
 rand = "0.8"
 rusqlite = { version = "0.36.0", features = ["bundled"] }
 scopeguard = "1.0"
@@ -26,7 +29,6 @@ thiserror = "1.0"
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "sync", "time"] }
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
-bb8 = "0.9"
 
 tikv-jemallocator = { version = "0.6.0", features = [
     "unprefixed_malloc_on_supported_platforms",

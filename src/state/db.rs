@@ -96,11 +96,11 @@ impl SqliteDispatcher {
 
     pub async fn dispatch<F, R>(&self, f: F) -> R
     where
-        F: FnOnce(&Connection) -> R + Send + 'static,
+        F: FnOnce(&mut Connection) -> R + Send + 'static,
         R: Send + Sync + 'static,
     {
         let (tx, rx) = oneshot::channel();
-        let query = Box::new(move |conn: &Connection| {
+        let query = Box::new(move |conn: &mut Connection| {
             tx.send(f(conn)).ok();
         });
 
@@ -115,4 +115,4 @@ impl SqliteDispatcher {
 }
 
 type QueryTx = mpsc::Sender<Query>;
-type Query = Box<dyn FnOnce(&Connection) + Send>;
+type Query = Box<dyn FnOnce(&mut Connection) + Send>;
