@@ -30,14 +30,14 @@ impl SqliteConnectionManager {
     #[allow(unused)]
     pub fn with_init<F>(mut self, init: F) -> Self
     where
-        F: Fn(&mut Connection) -> rusqlite::Result<()> + Send + Sync + 'static,
+        F: Fn(&Connection) -> rusqlite::Result<()> + Send + Sync + 'static,
     {
         self.init = Some(Box::new(init));
         self
     }
 }
 
-type InitFn = dyn Fn(&mut Connection) -> rusqlite::Result<()> + Send + Sync + 'static;
+type InitFn = dyn Fn(&Connection) -> rusqlite::Result<()> + Send + Sync + 'static;
 
 impl bb8::ManageConnection for SqliteConnectionManager {
     type Connection = Connection;
@@ -96,11 +96,11 @@ impl SqliteDispatcher {
 
     pub async fn dispatch<F, R>(&self, f: F) -> R
     where
-        F: FnOnce(&mut Connection) -> R + Send + 'static,
+        F: FnOnce(&Connection) -> R + Send + 'static,
         R: Send + Sync + 'static,
     {
         let (tx, rx) = oneshot::channel();
-        let query = Box::new(move |conn: &mut Connection| {
+        let query = Box::new(move |conn: &Connection| {
             tx.send(f(conn)).ok();
         });
 
@@ -115,4 +115,4 @@ impl SqliteDispatcher {
 }
 
 type QueryTx = mpsc::Sender<Query>;
-type Query = Box<dyn FnOnce(&mut Connection) + Send>;
+type Query = Box<dyn FnOnce(&Connection) + Send>;

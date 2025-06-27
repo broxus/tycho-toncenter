@@ -76,8 +76,6 @@ mod tests {
                     offset: 0,
                 })
                 .await?;
-
-            // NOTE: for now
             assert!(result.is_empty());
         }
 
@@ -112,6 +110,93 @@ mod tests {
                 .await?;
             assert_eq!(result, to_insert);
         }
+
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn token_wallets_query_works() -> Result<()> {
+        tycho_util::test::init_logger("token_wallets_query_works", "trace");
+
+        let (context, _tmp_dir) = StorageContext::new_temp().await?;
+        let storage = TonCenterStorage::new(context.clone()).await?;
+
+        let repo = storage.tokens();
+
+        for _ in 0..3 {
+            let result = repo
+                .get_jetton_wallets(GetJettonWalletsParams {
+                    wallet_addresses: None,
+                    owner_addresses: Some(vec![dumb_addr(0x11), dumb_addr(0x22)]),
+                    jetton_addresses: Some(vec![dumb_addr(0x11)]),
+                    limit: NonZeroUsize::new(10).unwrap(),
+                    offset: 0,
+                    exclude_zero_balance: true,
+                    order_by: None,
+                })
+                .await?;
+            assert!(result.is_empty());
+        }
+
+        let mut to_insert = [0x11, 0x22, 0x33, 0x44, 0x55].map(|addr| JettonWallet {
+            address: dumb_addr(addr),
+            balance: (addr as u32 * 123u32).into(),
+            owner: dumb_addr(0x22),
+            jetton: dumb_addr(0x11),
+            last_transaction_lt: 123,
+            code_hash: Some(HashBytes::ZERO),
+            data_hash: Some(HashBytes::ZERO),
+        });
+        let affected_rows = repo.insert_jetton_wallets(to_insert.to_vec()).await?;
+        assert_eq!(affected_rows, to_insert.len());
+        let affected_rows = repo.insert_jetton_wallets(to_insert.to_vec()).await?;
+        assert_eq!(affected_rows, 0);
+
+        to_insert[1].last_transaction_lt += 1;
+        let affected_rows = repo.insert_jetton_wallets(to_insert.to_vec()).await?;
+        assert_eq!(affected_rows, 1);
+
+        for _ in 0..3 {
+            let result = repo
+                .get_jetton_wallets(GetJettonWalletsParams {
+                    wallet_addresses: None,
+                    owner_addresses: None,
+                    jetton_addresses: None,
+                    limit: NonZeroUsize::new(10).unwrap(),
+                    offset: 0,
+                    exclude_zero_balance: true,
+                    order_by: None,
+                })
+                .await?;
+            assert_eq!(result, to_insert);
+        }
+
+        to_insert.reverse();
+        let result = repo
+            .get_jetton_wallets(GetJettonWalletsParams {
+                wallet_addresses: None,
+                owner_addresses: None,
+                jetton_addresses: None,
+                limit: NonZeroUsize::new(10).unwrap(),
+                offset: 0,
+                exclude_zero_balance: true,
+                order_by: Some(OrderJettonWalletsBy::Balance { reverse: true }),
+            })
+            .await?;
+        assert_eq!(result, to_insert);
+
+        let result = repo
+            .get_jetton_wallets(GetJettonWalletsParams {
+                wallet_addresses: None,
+                owner_addresses: Some(vec![dumb_addr(0x22)]),
+                jetton_addresses: None,
+                limit: NonZeroUsize::new(10).unwrap(),
+                offset: 0,
+                exclude_zero_balance: true,
+                order_by: Some(OrderJettonWalletsBy::Balance { reverse: true }),
+            })
+            .await?;
+        assert_eq!(result, to_insert);
 
         Ok(())
     }

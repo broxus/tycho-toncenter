@@ -926,11 +926,28 @@ pub enum MessageDirection {
     Out,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, Serialize)]
-#[serde(rename_all = "lowercase")]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SortDirection {
     Asc,
     Desc,
+}
+
+impl<'de> Deserialize<'de> for SortDirection {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        use serde::de::Error;
+
+        let BorrowedStr(str) = <_>::deserialize(deserializer)?;
+        match str.as_ref() {
+            "a" | "asc" => Ok(Self::Asc),
+            "d" | "desc" => Ok(Self::Desc),
+            _ => Err(Error::custom(
+                "expected `asc` or `desc` as soring direction",
+            )),
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy, Serialize)]

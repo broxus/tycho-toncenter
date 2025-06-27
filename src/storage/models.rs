@@ -23,6 +23,19 @@ row! {
     }
 }
 
+row! {
+    #[derive(Debug, Clone, PartialEq, Eq)]
+    pub struct JettonWallet {
+        pub address: StdAddr,
+        pub balance: BigUint,
+        pub owner: StdAddr,
+        pub jetton: StdAddr,
+        pub last_transaction_lt: u64,
+        pub code_hash: Option<HashBytes>,
+        pub data_hash: Option<HashBytes>,
+    }
+}
+
 // === Params ===
 
 pub struct GetJettonMastersParams {
@@ -30,4 +43,19 @@ pub struct GetJettonMastersParams {
     pub admin_addresses: Option<Vec<StdAddr>>,
     pub limit: NonZeroUsize,
     pub offset: usize,
+}
+
+pub struct GetJettonWalletsParams {
+    pub wallet_addresses: Option<Vec<StdAddr>>,
+    pub owner_addresses: Option<Vec<StdAddr>>,
+    pub jetton_addresses: Option<Vec<StdAddr>>,
+    pub exclude_zero_balance: bool,
+    pub limit: NonZeroUsize,
+    pub offset: usize,
+    pub order_by: Option<OrderJettonWalletsBy>,
+}
+
+#[derive(Debug, Clone, Copy)]
+pub enum OrderJettonWalletsBy {
+    Balance { reverse: bool },
 }

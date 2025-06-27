@@ -1,4 +1,5 @@
 use std::cell::RefCell;
+use std::fmt::Write;
 
 use everscale_types::cell::HashBytes;
 use everscale_types::models::StdAddr;
@@ -24,8 +25,8 @@ macro_rules! row {
             )*
         }
 
-        impl $ident {
-            pub const COLUMN_COUNT: usize = const {
+        impl $crate::storage::util::KnownColumnCount for $ident {
+            const COLUMN_COUNT: usize = const {
                 $crate::storage::util::row!(@field_count { 0 } $($field)*)
             };
         }
@@ -93,6 +94,64 @@ impl QueryBuffer {
 
 // === Params ===
 
+pub fn skip_or_where<T>(filter: &Option<T>) -> impl std::fmt::Display + '_
+where
+    T: std::ops::Deref<Target = str>,
+{
+    struct OptWhere<'a>(Option<&'a str>);
+
+    impl std::fmt::Display for OptWhere<'_> {
+        #[inline]
+        fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+            match self.0 {
+                None => Ok(()),
+                Some(filter) => write!(f, "WHERE {filter}"),
+            }
+        }
+    }
+
+    OptWhere(filter.as_deref())
+}
+
+pub fn add_opt_array_filter<'a, T>(
+    filter: &mut Option<String>,
+    field: &str,
+    items: Option<&'a [T]>,
+) -> &'a [T] {
+    if let Some(items) = items {
+        if let Some(new_filter) = array_filter_params(field, items.len()) {
+            match filter {
+                None => *filter = Some(new_filter),
+                Some(filter) => write!(filter, " AND {new_filter}").unwrap(),
+            }
+            return items;
+        }
+    }
+    &[]
+}
+
+pub fn add_array_filter<'a, T>(
+    filter: &mut Option<String>,
+    field: &str,
+    items: &'a [T],
+) -> &'a [T] {
+    if let Some(new_filter) = array_filter_params(field, items.len()) {
+        match filter {
+            None => *filter = Some(new_filter),
+            Some(filter) => write!(filter, " AND {new_filter}").unwrap(),
+        }
+        return items;
+    }
+    &[]
+}
+
+pub fn add_raw_filter(filter: &mut Option<String>, raw: &str) {
+    match filter {
+        None => *filter = Some(raw.to_owned()),
+        Some(filter) => write!(filter, " AND {raw}").unwrap(),
+    }
+}
+
 pub fn array_filter_params(field: &str, item_count: usize) -> Option<String> {
     match item_count {
         0 => None,
@@ -136,6 +195,10 @@ pub trait SqlColumnsRepr {
         Self: 'a;
 
     fn as_columns_iter(&self) -> Self::Iter<'_>;
+}
+
+pub trait KnownColumnCount {
+    const COLUMN_COUNT: usize;
 }
 
 // === SQL Type wrapper ===
@@ -199,13 +262,13 @@ impl<T: SqlTypeRepr> SqlTypeRepr for Option<T> {
 impl SqlTypeRepr for BigUint {
     #[inline]
     fn to_sql_impl(&self) -> rusqlite::Result<ToSqlOutput<'_>> {
-        Ok(ToSqlOutput::Owned(Value::Blob(self.to_bytes_le())))
+        Ok(ToSqlOutput::Owned(Value::Blob(self.to_bytes_be())))
     }
 
     #[inline]
     fn from_sql_impl(value: ValueRef<'_>) -> Result<Self, FromSqlError> {
         let blob = value.as_blob()?;
-        Ok(BigUint::from_bytes_le(blob))
+        Ok(BigUint::from_bytes_be(blob))
     }
 }
 
