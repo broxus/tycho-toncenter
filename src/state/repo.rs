@@ -173,7 +173,7 @@ impl TokensRepo {
 
         let mut filter_query = None;
         let wallet_addresses = if let Some(addresses) = &params.wallet_addresses {
-            order_by = Some(format!("J.address ASC"));
+            order_by = Some("J.address ASC".to_owned());
             add_array_filter(&mut filter_query, "J.address", addresses)
         } else {
             &[]
@@ -243,9 +243,11 @@ impl TokensRepo {
         let batch_values = (batch_count > 0)
             .then(T::batch_params_string)
             .unwrap_or_default();
-        let tail_values = (tail_len > 0)
-            .then(|| tuple_list(tail_len, T::COLUMN_COUNT))
-            .unwrap_or_default();
+        let tail_values = if tail_len > 0 {
+            tuple_list(tail_len, T::COLUMN_COUNT)
+        } else {
+            Default::default()
+        };
 
         tracing::warn!(
             elapsed = %humantime::format_duration(started_at.elapsed()),
@@ -272,7 +274,7 @@ impl TokensRepo {
 
                 let mut affected_rows = 0usize;
                 for _ in 0..batch_count {
-                    affected_rows += execute(rows_per_batch, &batch_values)?;
+                    affected_rows += execute(rows_per_batch, batch_values)?;
                 }
                 if tail_len > 0 {
                     affected_rows += execute(tail_len, &tail_values)?;
@@ -307,12 +309,11 @@ fn get_version(connection: &Connection) -> Result<Option<(usize, usize, usize)>>
     let mut stmt = connection.prepare("SELECT major, minor, patch FROM db_version LIMIT 1")?;
     let mut versions = stmt.query_map([], |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)))?;
 
-    let result;
-    match versions.next() {
-        Some(Ok(version)) => result = version,
+    let result = match versions.next() {
+        Some(Ok(version)) => version,
         Some(Err(e)) => return Err(e.into()),
         None => return Ok(None),
-    }
+    };
 
     let other_versions = versions.collect::<Vec<_>>();
     if !other_versions.is_empty() {

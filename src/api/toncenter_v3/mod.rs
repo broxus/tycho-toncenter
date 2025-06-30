@@ -20,6 +20,7 @@ use tycho_util::FastHashSet;
 
 use self::models::{Transaction, *};
 use crate::state::TonCenterRpcState;
+use crate::state::models::{GetJettonMastersParams, GetJettonWalletsParams, OrderJettonWalletsBy};
 
 mod models;
 
@@ -34,6 +35,8 @@ pub fn router() -> axum::Router<TonCenterRpcState> {
         )
         .route("/adjacentTransactions", get(get_adjacent_transactions))
         .route("/transactionsByMessage", get(get_transactions_by_message))
+        .route("/jetton/masters", get(get_jetton_masters))
+        .route("/jetton/wallets", get(get_jetton_wallets))
 }
 
 // === GET /masterchainInfo ===
@@ -924,6 +927,97 @@ async fn get_transactions_by_message(
     .await
 }
 
+// === GET /jetton/masters ===
+
+async fn get_jetton_masters(
+    State(state): State<TonCenterRpcState>,
+    query: Result<Query<JettonMastersRequest>, QueryRejection>,
+) -> Result<Response, ErrorResponse> {
+    const MAX_LIMIT: usize = 1000;
+
+    // Validate query.
+    let Query(query) = query?;
+    if query.limit.get() > MAX_LIMIT {
+        return Err(ErrorResponse::too_big_limit(MAX_LIMIT));
+    }
+
+    let masters = state
+        .tokens()
+        .get_jetton_masters(GetJettonMastersParams {
+            master_addresses: query.address,
+            admin_addresses: query.admin_address,
+            limit: query.limit,
+            offset: query.offset,
+        })
+        .await
+        .map_err(ErrorResponse::internal)?
+        .into_iter()
+        .map(|item| {
+            Ok::<_, anyhow::Error>(JettonMastersResponseItem {
+                address: item.address,
+                total_supply: item.total_supply,
+                mintable: item.mintable,
+                admin_address: item.admin_address,
+                jetton_content: item
+                    .jetton_content
+                    .map(serde_json::value::RawValue::from_string)
+                    .transpose()?,
+                jetton_wallet_code_hash: item.wallet_code_hash,
+                code_hash: item.code_hash,
+                data_hash: item.data_hash,
+                last_transaction_lt: item.last_transaction_lt,
+            })
+        })
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(ErrorResponse::internal)?;
+
+    Ok(ok_to_response(JettonMastersResponse::new(masters)))
+}
+
+// === GET /jetton/wallets ===
+
+async fn get_jetton_wallets(
+    State(state): State<TonCenterRpcState>,
+    query: Result<Query<JettonWalletsRequest>, QueryRejection>,
+) -> Result<Response, ErrorResponse> {
+    const MAX_LIMIT: usize = 1000;
+
+    // Validate query.
+    let Query(query) = query?;
+    if query.limit.get() > MAX_LIMIT {
+        return Err(ErrorResponse::too_big_limit(MAX_LIMIT));
+    }
+
+    let wallets = state
+        .tokens()
+        .get_jetton_wallets(GetJettonWalletsParams {
+            wallet_addresses: query.address,
+            owner_addresses: query.owner_address,
+            jetton_addresses: query.jetton_address,
+            exclude_zero_balance: query.exclude_zero_balance,
+            limit: query.limit,
+            offset: query.offset,
+            order_by: query.sort.map(|sort| OrderJettonWalletsBy::Balance {
+                reverse: matches!(sort, SortDirection::Desc),
+            }),
+        })
+        .await
+        .map_err(ErrorResponse::internal)?
+        .into_iter()
+        .map(|item| JettonWalletsResponseItem {
+            address: item.address,
+            balance: item.balance,
+            owner: item.owner,
+            jetton: item.jetton,
+            last_transaction_lt: item.last_transaction_lt,
+            code_hash: item.code_hash,
+            data_hash: item.data_hash,
+        })
+        .collect::<Vec<_>>();
+
+    Ok(ok_to_response(JettonWalletsResponse::new(wallets)))
+}
+
 // === Helpers ===
 
 fn ok_no_transactions() -> Response {
@@ -974,6 +1068,13 @@ impl ErrorResponse {
         Self {
             status_code: StatusCode::NOT_FOUND,
             error: msg.into(),
+        }
+    }
+
+    fn too_big_limit(max: usize) -> Self {
+        Self {
+            status_code: StatusCode::BAD_REQUEST,
+            error: format!("`limit` is too big, at most {max} is allowed").into(),
         }
     }
 }

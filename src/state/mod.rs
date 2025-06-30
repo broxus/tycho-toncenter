@@ -1,15 +1,11 @@
 use std::sync::Arc;
 
 use anyhow::{Context, Result};
-use everscale_types::models::StdAddr;
 use futures_util::future::BoxFuture;
-use num_bigint::BigUint;
-use rand::Rng;
 use tycho_core::block_strider::{BlockSubscriber, BlockSubscriberContext};
 use tycho_rpc::RpcState;
 use tycho_storage::StorageContext;
 
-use self::models::JettonWallet;
 pub use self::repo::TokensRepo;
 
 pub mod models;
@@ -74,31 +70,9 @@ impl BlockSubscriber for TonCenterRpcState {
 
     fn handle_block<'a>(
         &'a self,
-        cx: &'a BlockSubscriberContext,
+        _cx: &'a BlockSubscriberContext,
         _: Self::Prepared,
     ) -> Self::HandleBlockFut<'a> {
-        Box::pin(async move {
-            let info = cx.block.load_info()?;
-
-            let new_wallets = {
-                let mut rng = rand::thread_rng();
-                (0..10000)
-                    .map(|_| JettonWallet {
-                        address: StdAddr::new(0, rng.r#gen()),
-                        balance: BigUint::from(rng.r#gen::<u64>()),
-                        owner: StdAddr::new(0, rng.r#gen()),
-                        jetton: StdAddr::new(0, rng.r#gen()),
-                        last_transaction_lt: info.start_lt,
-                        code_hash: Some(rng.r#gen()),
-                        data_hash: Some(rng.r#gen()),
-                    })
-                    .collect::<Vec<_>>()
-            };
-
-            let rows = self.inner.tokens.insert_jetton_wallets(new_wallets).await?;
-            tracing::info!(rows, "inserted stub wallets");
-
-            Ok(())
-        })
+        Box::pin(async move { Ok(()) })
     }
 }

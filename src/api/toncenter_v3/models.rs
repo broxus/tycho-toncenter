@@ -5,6 +5,7 @@ use everscale_types::models::{
 };
 use everscale_types::num::{Tokens, VarUint24, VarUint56};
 use everscale_types::prelude::*;
+use num_bigint::BigUint;
 use serde::ser::{SerializeMap, SerializeStruct};
 use serde::{Deserialize, Serialize};
 use tycho_block_util::message::build_normalized_external_message;
@@ -79,7 +80,7 @@ pub struct TransactionsRequest {
     pub start_lt: Option<u64>,
     #[serde(default)]
     pub end_lt: Option<u64>,
-    #[serde(default = "default_tx_limit")]
+    #[serde(default = "default_limit")]
     pub limit: NonZeroUsize,
     #[serde(default)]
     pub offset: usize,
@@ -107,7 +108,7 @@ impl TransactionsRequest {
 #[derive(Debug, Deserialize)]
 pub struct TransactionsByMcBlockRequest {
     pub seqno: u32,
-    #[serde(default = "default_tx_limit")]
+    #[serde(default = "default_limit")]
     pub limit: NonZeroUsize,
     #[serde(default)]
     pub offset: usize,
@@ -133,7 +134,7 @@ pub struct TransactionsByMessageRequest {
     pub opcode: Option<i32>,
     #[serde(default)]
     pub direction: Option<MessageDirection>,
-    #[serde(default = "default_tx_limit")]
+    #[serde(default = "default_limit")]
     pub limit: NonZeroUsize,
     #[serde(default)]
     pub offset: usize,
@@ -141,7 +142,37 @@ pub struct TransactionsByMessageRequest {
     pub sort: SortDirection,
 }
 
-const fn default_tx_limit() -> NonZeroUsize {
+#[derive(Debug, Deserialize)]
+pub struct JettonMastersRequest {
+    #[serde(default, with = "option_tonlib_address_list")]
+    pub address: Option<Vec<StdAddr>>,
+    #[serde(default, with = "option_tonlib_address_list")]
+    pub admin_address: Option<Vec<StdAddr>>,
+    #[serde(default = "default_limit")]
+    pub limit: NonZeroUsize,
+    #[serde(default)]
+    pub offset: usize,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct JettonWalletsRequest {
+    #[serde(default, with = "option_tonlib_address_list")]
+    pub address: Option<Vec<StdAddr>>,
+    #[serde(default, with = "option_tonlib_address_list")]
+    pub owner_address: Option<Vec<StdAddr>>,
+    #[serde(default, with = "option_tonlib_address_list")]
+    pub jetton_address: Option<Vec<StdAddr>>,
+    #[serde(default)]
+    pub exclude_zero_balance: bool,
+    #[serde(default = "default_limit")]
+    pub limit: NonZeroUsize,
+    #[serde(default)]
+    pub offset: usize,
+    #[serde(default)]
+    pub sort: Option<SortDirection>,
+}
+
+const fn default_limit() -> NonZeroUsize {
     NonZeroUsize::new(10).unwrap()
 }
 
@@ -177,6 +208,101 @@ impl TransactionsResponse {
             address_book,
         }
     }
+}
+
+#[derive(Serialize)]
+pub struct JettonMastersResponse {
+    pub jetton_masters: Vec<JettonMastersResponseItem>,
+    pub address_book: AddressBook,
+}
+
+impl JettonMastersResponse {
+    pub fn new(jetton_masters: Vec<JettonMastersResponseItem>) -> Self {
+        let mut address_book = AddressBook::default();
+        for item in &jetton_masters {
+            address_book.items.insert(item.address.clone());
+            if let Some(admin_address) = &item.admin_address {
+                address_book.items.insert(admin_address.clone());
+            }
+        }
+        Self {
+            jetton_masters,
+            address_book,
+        }
+    }
+}
+
+#[derive(Debug, Serialize)]
+pub struct JettonMastersResponseItem {
+    pub address: StdAddr,
+    #[serde(with = "serde_helpers::string")]
+    pub total_supply: BigUint,
+    pub mintable: bool,
+    pub admin_address: Option<StdAddr>,
+    #[serde(serialize_with = "JettonMastersResponseItem::serialize_option_content")]
+    pub jetton_content: Option<Box<serde_json::value::RawValue>>,
+    #[serde(with = "serde_helpers::tonlib_hash")]
+    pub jetton_wallet_code_hash: HashBytes,
+    #[serde(with = "serde_helpers::tonlib_hash")]
+    pub code_hash: HashBytes,
+    #[serde(with = "serde_helpers::tonlib_hash")]
+    pub data_hash: HashBytes,
+    #[serde(with = "serde_helpers::string")]
+    pub last_transaction_lt: u64,
+}
+
+impl JettonMastersResponseItem {
+    fn serialize_option_content<S>(
+        content: &Option<Box<serde_json::value::RawValue>>,
+        serializer: S,
+    ) -> Result<S::Ok, S::Error>
+    where
+        S: serde::Serializer,
+    {
+        #[derive(Serialize)]
+        struct Empty {}
+
+        match content {
+            None => Empty {}.serialize(serializer),
+            Some(content) => content.serialize(serializer),
+        }
+    }
+}
+
+#[derive(Serialize)]
+pub struct JettonWalletsResponse {
+    pub jetton_wallets: Vec<JettonWalletsResponseItem>,
+    pub address_book: AddressBook,
+}
+
+impl JettonWalletsResponse {
+    pub fn new(jetton_wallets: Vec<JettonWalletsResponseItem>) -> Self {
+        let mut address_book = AddressBook::default();
+        for item in &jetton_wallets {
+            address_book.items.insert(item.address.clone());
+            address_book.items.insert(item.owner.clone());
+            address_book.items.insert(item.jetton.clone());
+        }
+        Self {
+            jetton_wallets,
+            address_book,
+        }
+    }
+}
+
+#[derive(Debug, Serialize)]
+pub struct JettonWalletsResponseItem {
+    pub address: StdAddr,
+    #[serde(with = "serde_helpers::string")]
+    pub balance: BigUint,
+    pub owner: StdAddr,
+    pub jetton: StdAddr,
+    #[serde(with = "serde_helpers::string")]
+    pub last_transaction_lt: u64,
+    #[serde(with = "serde_helpers::option_tonlib_hash")]
+    pub code_hash: Option<HashBytes>,
+    #[serde(with = "serde_helpers::option_tonlib_hash")]
+    pub data_hash: Option<HashBytes>,
 }
 
 // === Stuff ===
@@ -998,5 +1124,65 @@ impl serde::Serialize for AddressBook {
             })?;
         }
         s.end()
+    }
+}
+
+mod option_tonlib_address_list {
+    use super::*;
+
+    pub fn deserialize<'de, D>(deserializer: D) -> Result<Option<Vec<StdAddr>>, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        #[derive(Deserialize)]
+        #[serde(transparent)]
+        #[repr(transparent)]
+        struct Item(#[serde(with = "tonlib_address_list")] Vec<StdAddr>);
+
+        Ok(Option::deserialize(deserializer)?.map(|Item(list)| list))
+    }
+}
+
+mod tonlib_address_list {
+    use super::*;
+
+    pub fn deserialize<'de, D>(deserializer: D) -> Result<Vec<StdAddr>, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        use serde::de::Error;
+
+        const MAX_SIZE: usize = 1024;
+
+        #[derive(Deserialize)]
+        #[serde(transparent)]
+        #[repr(transparent)]
+        struct ListItem(#[serde(with = "serde_helpers::tonlib_address")] StdAddr);
+
+        struct ListVisitor;
+
+        impl<'de> serde::de::Visitor<'de> for ListVisitor {
+            type Value = Vec<StdAddr>;
+
+            fn expecting(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
+                f.write_str("address list of at most 1024 items")
+            }
+
+            fn visit_seq<A>(self, mut seq: A) -> Result<Self::Value, A::Error>
+            where
+                A: serde::de::SeqAccess<'de>,
+            {
+                let mut items = Vec::new();
+                while let Some(ListItem(item)) = seq.next_element()? {
+                    if items.len() >= MAX_SIZE {
+                        return Err(Error::custom("too many items in address filter"));
+                    }
+                    items.push(item);
+                }
+                Ok(items)
+            }
+        }
+
+        deserializer.deserialize_seq(ListVisitor)
     }
 }
