@@ -1,4 +1,11 @@
 --
+CREATE TABLE IF NOT EXISTS known_interfaces (
+    code_hash   BLOB NOT NULL PRIMARY KEY,
+    interface   INTEGER NOT NULL,
+    is_broken   INTEGER NOT NULL
+);
+
+--
 CREATE TABLE IF NOT EXISTS jetton_masters (
     address             BLOB NOT NULL PRIMARY KEY,
     total_supply        BLOB NOT NULL,

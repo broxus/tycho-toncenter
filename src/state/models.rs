@@ -10,6 +10,15 @@ use super::util::*;
 
 row! {
     #[derive(Debug, Clone, PartialEq, Eq)]
+    pub struct KnownInterface {
+        pub code_hash: HashBytes,
+        pub interface: u8,
+        pub is_broken: bool,
+    }
+}
+
+row! {
+    #[derive(Debug, Clone, PartialEq, Eq)]
     pub struct JettonMaster {
         pub address: StdAddr,
         pub total_supply: BigUint,

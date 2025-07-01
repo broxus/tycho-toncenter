@@ -336,6 +336,19 @@ impl SqlTypeRepr for HashBytes {
     }
 }
 
+impl SqlTypeRepr for crate::state::interface::InterfaceType {
+    #[inline]
+    fn from_sql_impl(value: ValueRef<'_>) -> Result<Self, FromSqlError> {
+        let id = u8::from_sql_impl(value)?;
+        Self::from_id(id).ok_or_else(|| FromSqlError::OutOfRange(id as i64))
+    }
+
+    #[inline]
+    fn to_sql_impl(&self) -> rusqlite::Result<ToSqlOutput<'_>> {
+        Ok(ToSqlOutput::Owned(Value::Integer(*self as u8 as i64)))
+    }
+}
+
 macro_rules! impl_existing {
     ($($ty:ty),*$(,)?) => {
         $(impl SqlTypeRepr for $ty {

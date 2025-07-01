@@ -3,9 +3,12 @@ use std::path::Path;
 use std::time::Instant;
 
 use anyhow::{Context, Result};
+use everscale_types::cell::HashBytes;
 use rusqlite::{Connection, OpenFlags, params_from_iter};
+use tycho_util::FastHashMap;
 
 use super::db::*;
+use super::interface::InterfaceType;
 use super::models::*;
 use super::util::*;
 
@@ -59,6 +62,33 @@ impl TokensRepo {
             .context("failed to create readers pool")?;
 
         Ok(Self { writer, readers })
+    }
+
+    pub async fn insert_known_interfaces(&self, rows: Vec<KnownInterface>) -> Result<usize> {
+        self.insert_rows_simple(rows, |sql, values| {
+            write!(
+                sql,
+                "INSERT INTO known_interfaces (code_hash,interface,is_broken) \
+                VALUES {values} \
+                ON CONFLICT(code_hash) DO UPDATE SET \
+                    is_broken = excluded.is_broken"
+            )
+        })
+        .await
+    }
+
+    pub async fn get_all_known_interfaces(&self) -> Result<FastHashMap<HashBytes, InterfaceType>> {
+        let conn = self.readers.get().await?;
+        let mut stmt = conn.prepare("SELECT code_hash,interface FROM known_interfaces")?;
+
+        stmt.query_map((), |row| {
+            Ok((
+                SqlType::<HashBytes>::get(row, 0)?,
+                SqlType::<InterfaceType>::get(row, 1)?,
+            ))
+        })?
+        .collect::<rusqlite::Result<_>>()
+        .map_err(Into::into)
     }
 
     pub async fn insert_jetton_masters(&self, rows: Vec<JettonMaster>) -> Result<usize> {
@@ -249,7 +279,7 @@ impl TokensRepo {
             Default::default()
         };
 
-        tracing::warn!(
+        tracing::trace!(
             elapsed = %humantime::format_duration(started_at.elapsed()),
             "prepared param list"
         );
