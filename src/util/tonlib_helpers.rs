@@ -2,7 +2,7 @@ use anyhow::Result;
 use everscale_types::models::StdAddr;
 use everscale_types::prelude::*;
 use num_bigint::BigInt;
-use tycho_vm::{RcStackValue, SafeRc, Stack};
+use tycho_vm::{OwnedCellSlice, RcStackValue, SafeRc, Stack, StackValueType};
 
 pub fn compute_method_id(bytes: impl AsRef<[u8]>) -> i64 {
     everscale_types::crc::crc_16(bytes.as_ref()) as i64 | 0x10000
@@ -58,13 +58,25 @@ impl StackParser {
             .map_err(Into::into)
     }
 
+    pub fn pop_cell_or_slice(&mut self) -> Result<OwnedCellSlice> {
+        let item = self.pop_item()?;
+        Ok(match item.ty() {
+            StackValueType::Cell => {
+                let cell = item.into_cell()?;
+                OwnedCellSlice::new_allow_exotic(SafeRc::unwrap_or_clone(cell))
+            }
+            StackValueType::Slice => SafeRc::unwrap_or_clone(item.into_cell_slice()?),
+            ty => anyhow::bail!("expected cell or slice, got {ty:?}"),
+        })
+    }
+
     pub fn pop_address(&mut self) -> Result<StdAddr> {
-        self.pop_cell()?.parse::<StdAddr>().map_err(Into::into)
+        StdAddr::load_from(&mut self.pop_cell_or_slice()?.apply()).map_err(Into::into)
     }
 
     pub fn pop_address_or_none(&mut self) -> Result<Option<StdAddr>> {
-        let cell = self.pop_cell()?;
-        let mut cs = cell.as_slice()?;
+        let slice = self.pop_cell_or_slice()?;
+        let mut cs = slice.apply();
         if cs.get_small_uint(0, 2)? == 0b00 {
             Ok(None)
         } else {
