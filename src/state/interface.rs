@@ -1,6 +1,6 @@
-use everscale_types::dict::RawKeys;
-use everscale_types::prelude::*;
 use once_cell::race::OnceBox;
+use tycho_types::dict::RawKeys;
+use tycho_types::prelude::*;
 use tycho_util::FastHashSet;
 
 use crate::util::tonlib_helpers::compute_method_id;
@@ -86,7 +86,7 @@ define_contract_interface!(JettonMasterInterface {
 fn parse_contract_getters(
     code: &DynCell,
     getter_ids: &mut FastHashSet<u64>,
-) -> Result<(), everscale_types::error::Error> {
+) -> Result<(), tycho_types::error::Error> {
     const MAX_METHOD_ID_BITS: u16 = 64;
     const MAX_KEY_BITS: u16 = 256;
 
@@ -96,18 +96,18 @@ fn parse_contract_getters(
 
     // Parse SETCP 0
     if cs.load_u16()? != 0xff_00 {
-        return Err(everscale_types::error::Error::InvalidTag);
+        return Err(tycho_types::error::Error::InvalidTag);
     }
 
     // Parse DICTPUSHCONST
     if cs.load_uint(14)? != 0b11110100101001 {
-        return Err(everscale_types::error::Error::InvalidTag);
+        return Err(tycho_types::error::Error::InvalidTag);
     }
 
     // Load a bit length of the dictionary.
     let n = cs.load_uint(10)? as u16;
     if n >= MAX_KEY_BITS {
-        return Err(everscale_types::error::Error::InvalidData);
+        return Err(tycho_types::error::Error::InvalidData);
     }
 
     // And parse all dictionary keys.

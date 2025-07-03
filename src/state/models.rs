@@ -1,8 +1,8 @@
 use std::num::NonZeroUsize;
 
-use everscale_types::cell::HashBytes;
-use everscale_types::models::StdAddr;
 use num_bigint::BigUint;
+use tycho_types::cell::HashBytes;
+use tycho_types::models::StdAddr;
 
 use super::util::*;
 

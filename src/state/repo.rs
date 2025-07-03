@@ -3,8 +3,8 @@ use std::path::Path;
 use std::time::Instant;
 
 use anyhow::{Context, Result};
-use everscale_types::cell::HashBytes;
 use rusqlite::{Connection, OpenFlags, params_from_iter};
+use tycho_types::cell::HashBytes;
 use tycho_util::FastHashMap;
 
 use super::db::*;
@@ -364,9 +364,9 @@ fn prepare_connection(connection: &Connection) -> rusqlite::Result<()> {
 mod tests {
     use std::num::NonZeroUsize;
 
-    use everscale_types::cell::HashBytes;
-    use everscale_types::models::StdAddr;
     use tycho_storage::StorageContext;
+    use tycho_types::cell::HashBytes;
+    use tycho_types::models::StdAddr;
 
     use super::*;
 

@@ -1,12 +1,12 @@
 use std::cell::RefCell;
 use std::fmt::Write;
 
-use everscale_types::cell::HashBytes;
-use everscale_types::models::StdAddr;
 use num_bigint::BigUint;
 use once_cell::race::OnceBox;
 use rusqlite::types::{FromSql, FromSqlError, ToSqlOutput, Value, ValueRef};
 use rusqlite::{Row, RowIndex, ToSql};
+use tycho_types::cell::HashBytes;
+use tycho_types::models::StdAddr;
 
 macro_rules! row {
     (

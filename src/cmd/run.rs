@@ -110,28 +110,33 @@ impl Cmd {
         node.update_validator_set_from_shard_state(&init_block_id)
             .await?;
 
-        // Build RPC.
-        let _rpc_task;
-        let (ext_rpc_block_subscriber, rpc_block_subscriber, rpc_state_subscriber) = {
-            let config = &node_config.rpc;
+        // Prepare RPC state.
+        let rpc_state = RpcState::builder()
+            .with_config(node_config.rpc.clone())
+            .with_storage(node.core_storage.clone())
+            .with_blockchain_rpc_client(node.blockchain_rpc_client.clone())
+            .with_zerostate_id(node.global_config.zerostate)
+            .build()?;
+        rpc_state
+            .init(&init_block_id)
+            .await
+            .context("failed to init RPC state")?;
 
-            let rpc_state = RpcState::builder()
-                .with_config(config.clone())
-                .with_storage(node.core_storage.clone())
-                .with_blockchain_rpc_client(node.blockchain_rpc_client.clone())
-                .with_zerostate_id(node.global_config.zerostate)
-                .build()?;
+        let ext_rpc_state = TonCenterRpcState::new(
+            node.storage_context.clone(),
+            rpc_state.clone(),
+            node.core_storage.clone(),
+        )
+        .await
+        .context("failed to create an extended RPC state")?;
 
-            rpc_state.init(&init_block_id).await?;
+        ext_rpc_state.sync_after_boot(&init_block_id, true).await?;
 
+        // Bind RPC.
+        let _rpc_task = {
             let toncenter_routes = axum::Router::new()
                 .nest("/toncenter/v2", api::toncenter_v2::router())
                 .nest("/toncenter/v3", api::toncenter_v3::router());
-
-            let ext_rpc_state =
-                TonCenterRpcState::new(node.storage_context.clone(), rpc_state.clone())
-                    .await
-                    .context("failed to create an extended RPC state")?;
 
             let endpoint = RpcEndpoint::builder()
                 .with_custom_routes(toncenter_routes)
@@ -139,17 +144,16 @@ impl Cmd {
                 .await
                 .context("failed to setup RPC server endpoint")?;
 
-            tracing::info!(listen_addr = %config.listen_addr, "RPC server started");
-            _rpc_task = JoinTask::new(async move {
+            tracing::info!(listen_addr = %node_config.rpc.listen_addr, "RPC server started");
+            JoinTask::new(async move {
                 if let Err(e) = endpoint.serve().await {
                     tracing::error!("RPC server failed: {e:?}");
                 }
                 tracing::info!("RPC server stopped");
-            });
-
-            let (block_subscriber, state_subscriber) = rpc_state.split();
-            (ext_rpc_state, block_subscriber, state_subscriber)
+            })
         };
+
+        let (rpc_block_subscriber, rpc_state_subscriber) = rpc_state.split();
 
         // Build strider.
         let archive_block_provider = node.build_archive_block_provider();
@@ -167,7 +171,7 @@ impl Cmd {
                     node.core_storage.clone(),
                     (rpc_state_subscriber, ps_subscriber),
                 ),
-                (rpc_block_subscriber, ext_rpc_block_subscriber),
+                (rpc_block_subscriber, ext_rpc_state),
                 node.validator_resolver().clone(),
                 MetricsSubscriber,
             )

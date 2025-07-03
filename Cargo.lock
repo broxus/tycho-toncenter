@@ -780,57 +780,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "everscale-crypto"
-version = "0.3.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "0da807f69d3d795921a2aaf4bd9b449e3d280d28b104e4909890a50c40a33950"
-dependencies = [
- "curve25519-dalek",
- "generic-array",
- "hex",
- "rand 0.8.5",
- "serde",
- "sha2",
- "tl-proto",
-]
-
-[[package]]
-name = "everscale-types"
-version = "0.1.2"
-source = "git+https://github.com/broxus/everscale-types.git?rev=77458d0b94c5dca09366acd84a904ff7e87d1b3b#77458d0b94c5dca09366acd84a904ff7e87d1b3b"
-dependencies = [
- "ahash",
- "base64",
- "bitflags",
- "blake3",
- "crc32c",
- "everscale-crypto",
- "everscale-types-proc",
- "hex",
- "num-bigint",
- "num-traits",
- "rand 0.8.5",
- "rayon",
- "scc",
- "serde",
- "sha2",
- "smallvec",
- "thiserror 2.0.12",
- "tl-proto",
- "typeid",
-]
-
-[[package]]
-name = "everscale-types-proc"
-version = "0.1.5"
-source = "git+https://github.com/broxus/everscale-types.git?rev=77458d0b94c5dca09366acd84a904ff7e87d1b3b#77458d0b94c5dca09366acd84a904ff7e87d1b3b"
-dependencies = [
- "proc-macro2",
- "quote",
- "syn",
-]
-
-[[package]]
 name = "exponential-backoff"
 version = "1.2.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1496,9 +1445,9 @@ dependencies = [
 
 [[package]]
 name = "libsqlite3-sys"
-version = "0.34.0"
+version = "0.35.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "91632f3b4fb6bd1d72aa3d78f41ffecfcf2b1a6648d8c241dbe7dbfaf4875e15"
+checksum = "133c182a6a2c87864fe97778797e46c7e999672690dc9fa3ee8e241aa4a9c13f"
 dependencies = [
  "cc",
  "pkg-config",
@@ -2274,9 +2223,9 @@ dependencies = [
 
 [[package]]
 name = "rusqlite"
-version = "0.36.0"
+version = "0.37.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "3de23c3319433716cf134eed225fe9986bc24f63bed9be9f20c329029e672dc7"
+checksum = "165ca6e57b20e1351573e3729b958bc62f0e48025386970b6e4d29e7a7e71f3f"
 dependencies = [
  "bitflags",
  "fallible-iterator",
@@ -3086,26 +3035,28 @@ checksum = "e421abadd41a4225275504ea4d6566923418b7f05506fbc9c0fe86ba7396114b"
 
 [[package]]
 name = "tycho-block-util"
-version = "0.2.10"
-source = "git+https://github.com/broxus/tycho.git?rev=6a40a766ff51f8cfc6bf23ff58b7eb84a8dee731#6a40a766ff51f8cfc6bf23ff58b7eb84a8dee731"
+version = "0.2.11"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "e2b99d84090c592716d949afb2a41b2645b3ee42a25e3a3e28ff6844d064c75e"
 dependencies = [
  "anyhow",
  "arc-swap",
  "bytes",
- "everscale-types",
  "hex",
  "parking_lot",
  "rayon",
  "thiserror 2.0.12",
  "tl-proto",
  "tycho-storage-traits",
+ "tycho-types",
  "tycho-util",
 ]
 
 [[package]]
 name = "tycho-core"
-version = "0.2.10"
-source = "git+https://github.com/broxus/tycho.git?rev=6a40a766ff51f8cfc6bf23ff58b7eb84a8dee731#6a40a766ff51f8cfc6bf23ff58b7eb84a8dee731"
+version = "0.2.11"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "62fbabeac1cb361d7cd23f76d911c496dfc83f44630981ba07c2c19294d35f70"
 dependencies = [
  "anyhow",
  "arc-swap",
@@ -3118,8 +3069,6 @@ dependencies = [
  "castaway",
  "crc32c",
  "dashmap",
- "everscale-crypto",
- "everscale-types",
  "futures-util",
  "humantime",
  "metrics",
@@ -3128,7 +3077,7 @@ dependencies = [
  "parking_lot_core",
  "pin-project-lite",
  "quick_cache",
- "rand 0.8.5",
+ "rand 0.9.1",
  "scopeguard",
  "serde",
  "sha2",
@@ -3140,16 +3089,34 @@ dependencies = [
  "tracing",
  "triomphe",
  "tycho-block-util",
+ "tycho-crypto",
  "tycho-network",
  "tycho-storage",
+ "tycho-types",
  "tycho-util",
  "weedb",
 ]
 
 [[package]]
+name = "tycho-crypto"
+version = "0.4.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "5dc575bf266a635aed302ac1f42c405693b06eb2750648b195c762bc01546530"
+dependencies = [
+ "curve25519-dalek",
+ "generic-array",
+ "hex",
+ "rand 0.9.1",
+ "serde",
+ "sha2",
+ "tl-proto",
+]
+
+[[package]]
 name = "tycho-network"
-version = "0.2.10"
-source = "git+https://github.com/broxus/tycho.git?rev=6a40a766ff51f8cfc6bf23ff58b7eb84a8dee731#6a40a766ff51f8cfc6bf23ff58b7eb84a8dee731"
+version = "0.2.11"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "c4811af51fd9d9efa80f204c9b082e7f96e17995180d0e807afe196aa9034d00"
 dependencies = [
  "ahash",
  "anyhow",
@@ -3160,7 +3127,6 @@ dependencies = [
  "castaway",
  "dashmap",
  "ed25519",
- "everscale-crypto",
  "exponential-backoff",
  "futures-util",
  "hex",
@@ -3171,7 +3137,7 @@ dependencies = [
  "pin-project-lite",
  "pkcs8",
  "quinn",
- "rand 0.8.5",
+ "rand 0.9.1",
  "ring",
  "rustls",
  "rustls-webpki 0.102.8",
@@ -3182,13 +3148,15 @@ dependencies = [
  "tokio",
  "tokio-util",
  "tracing",
+ "tycho-crypto",
  "tycho-util",
 ]
 
 [[package]]
 name = "tycho-rpc"
-version = "0.2.10"
-source = "git+https://github.com/broxus/tycho.git?rev=6a40a766ff51f8cfc6bf23ff58b7eb84a8dee731#6a40a766ff51f8cfc6bf23ff58b7eb84a8dee731"
+version = "0.2.11"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "dae6166e7866da2b758ded59b61fcef8e3be5f5da765327123063a087ba719c1"
 dependencies = [
  "ahash",
  "anyhow",
@@ -3197,14 +3165,13 @@ dependencies = [
  "base64",
  "bitflags",
  "bytes",
- "everscale-types",
  "futures-util",
  "humantime",
  "metrics",
  "moka",
  "parking_lot",
  "prost",
- "rand 0.8.5",
+ "rand 0.9.1",
  "scopeguard",
  "serde",
  "serde_json",
@@ -3216,6 +3183,7 @@ dependencies = [
  "tycho-block-util",
  "tycho-core",
  "tycho-storage",
+ "tycho-types",
  "tycho-util",
  "tycho-vm",
  "weedb",
@@ -3223,8 +3191,9 @@ dependencies = [
 
 [[package]]
 name = "tycho-storage"
-version = "0.2.10"
-source = "git+https://github.com/broxus/tycho.git?rev=6a40a766ff51f8cfc6bf23ff58b7eb84a8dee731#6a40a766ff51f8cfc6bf23ff58b7eb84a8dee731"
+version = "0.2.11"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "166241fb6603d1019f476360ddc342e09384f59d2b70fd0279446002d2efc450"
 dependencies = [
  "anyhow",
  "arc-swap",
@@ -3232,7 +3201,7 @@ dependencies = [
  "fdlimit",
  "libc",
  "metrics",
- "rand 0.8.5",
+ "rand 0.9.1",
  "rlimit",
  "scopeguard",
  "serde",
@@ -3246,12 +3215,13 @@ dependencies = [
 
 [[package]]
 name = "tycho-storage-traits"
-version = "0.2.10"
-source = "git+https://github.com/broxus/tycho.git?rev=6a40a766ff51f8cfc6bf23ff58b7eb84a8dee731#6a40a766ff51f8cfc6bf23ff58b7eb84a8dee731"
+version = "0.2.11"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "e7092b9df39606c9abbf14271ee96e190cb3ab5bf521fe382f5b353de62cfad9"
 dependencies = [
  "bytes",
- "everscale-types",
  "smallvec",
+ "tycho-types",
 ]
 
 [[package]]
@@ -3264,18 +3234,17 @@ dependencies = [
  "bb8",
  "bytes",
  "clap",
- "everscale-types",
  "futures-util",
  "humantime",
  "num-bigint",
  "once_cell",
- "rand 0.8.5",
+ "rand 0.9.1",
  "rusqlite",
  "scopeguard",
  "serde",
  "serde_json",
  "sha2",
- "thiserror 1.0.69",
+ "thiserror 2.0.12",
  "tikv-jemallocator",
  "tokio",
  "tracing",
@@ -3284,14 +3253,54 @@ dependencies = [
  "tycho-core",
  "tycho-rpc",
  "tycho-storage",
+ "tycho-types",
  "tycho-util",
  "tycho-vm",
 ]
 
 [[package]]
+name = "tycho-types"
+version = "0.2.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "c31822bf64a85083499da15b4ad8f3df85e1155e256dc010911433b647763d7b"
+dependencies = [
+ "ahash",
+ "base64",
+ "bitflags",
+ "blake3",
+ "crc32c",
+ "hex",
+ "num-bigint",
+ "num-traits",
+ "rand 0.9.1",
+ "rayon",
+ "scc",
+ "serde",
+ "sha2",
+ "smallvec",
+ "thiserror 2.0.12",
+ "tl-proto",
+ "tycho-crypto",
+ "tycho-types-proc",
+ "typeid",
+]
+
+[[package]]
+name = "tycho-types-proc"
+version = "0.2.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "80d303e410fed076d6ff43c930598e8c4fcff75bfed2f197c130cc314aa9123b"
+dependencies = [
+ "proc-macro2",
+ "quote",
+ "syn",
+]
+
+[[package]]
 name = "tycho-util"
-version = "0.2.10"
-source = "git+https://github.com/broxus/tycho.git?rev=6a40a766ff51f8cfc6bf23ff58b7eb84a8dee731#6a40a766ff51f8cfc6bf23ff58b7eb84a8dee731"
+version = "0.2.11"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "7b36374f6e44d192af62e36f37a3d605726148381f7abb8290a632e719ceec18"
 dependencies = [
  "ahash",
  "anyhow",
@@ -3306,7 +3315,7 @@ dependencies = [
  "libc",
  "metrics",
  "metrics-exporter-prometheus",
- "rand 0.8.5",
+ "rand 0.9.1",
  "rayon",
  "serde",
  "serde_json",
@@ -3326,29 +3335,31 @@ dependencies = [
 
 [[package]]
 name = "tycho-vm"
-version = "0.1.0"
-source = "git+https://www.github.com/broxus/tycho-vm.git?rev=d2332649d53089bc1e89fd16208eb9a91a264ada#d2332649d53089bc1e89fd16208eb9a91a264ada"
+version = "0.2.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "00d0a2334ef0fef1c75f1330922c81cc4a95b0a9f2c8add179e653a930ebd52b"
 dependencies = [
  "ahash",
  "anyhow",
  "bitflags",
  "blake2",
  "dyn-clone",
- "everscale-crypto",
- "everscale-types",
  "num-bigint",
  "num-integer",
  "num-traits",
  "sha2",
  "thiserror 2.0.12",
  "tl-proto",
+ "tycho-crypto",
+ "tycho-types",
  "tycho-vm-proc",
 ]
 
 [[package]]
 name = "tycho-vm-proc"
-version = "0.1.0"
-source = "git+https://www.github.com/broxus/tycho-vm.git?rev=d2332649d53089bc1e89fd16208eb9a91a264ada#d2332649d53089bc1e89fd16208eb9a91a264ada"
+version = "0.2.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "21c820f439a12251e8a5aa15f49f4fd18c73edb6694546dfce4c0aa250fbd71a"
 dependencies = [
  "darling",
  "proc-macro2",

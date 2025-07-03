@@ -1,16 +1,16 @@
 use std::num::NonZeroUsize;
 
-use everscale_types::models::{
-    BlockId, BlockIdShort, IntAddr, MsgInfo, ShardIdent, StateInit, StdAddr, StdAddrBase64Repr,
-};
-use everscale_types::num::{Tokens, VarUint24, VarUint56};
-use everscale_types::prelude::*;
 use num_bigint::BigUint;
 use serde::ser::{SerializeMap, SerializeStruct};
 use serde::{Deserialize, Serialize};
 use tycho_block_util::message::build_normalized_external_message;
 use tycho_rpc::util::serde_helpers;
 use tycho_rpc::{BriefBlockInfo, TransactionInfo};
+use tycho_types::models::{
+    BlockId, BlockIdShort, IntAddr, MsgInfo, ShardIdent, StateInit, StdAddr, StdAddrBase64Repr,
+};
+use tycho_types::num::{Tokens, VarUint24, VarUint56};
+use tycho_types::prelude::*;
 use tycho_util::FastHashSet;
 use tycho_util::serde_helpers::BorrowedStr;
 
@@ -424,8 +424,8 @@ impl Transaction {
     pub fn load_raw(
         info: &TransactionInfo,
         cell: &DynCell,
-    ) -> Result<Self, everscale_types::error::Error> {
-        let tx = cell.parse::<everscale_types::models::Transaction>()?;
+    ) -> Result<Self, tycho_types::error::Error> {
+        let tx = cell.parse::<tycho_types::models::Transaction>()?;
 
         let state_update = tx.state_update.load()?;
 
@@ -554,9 +554,9 @@ pub enum TxDescription {
     TickTock(TxDescriptionTickTock),
 }
 
-impl From<everscale_types::models::TxInfo> for TxDescription {
-    fn from(value: everscale_types::models::TxInfo) -> Self {
-        use everscale_types::models::TxInfo;
+impl From<tycho_types::models::TxInfo> for TxDescription {
+    fn from(value: tycho_types::models::TxInfo) -> Self {
+        use tycho_types::models::TxInfo;
 
         match value {
             TxInfo::Ordinary(info) => Self::Ordinary(info.into()),
@@ -575,9 +575,9 @@ pub struct TxDescriptionTickTock {
     pub action: Option<TxDescriptionActionPhase>,
 }
 
-impl From<everscale_types::models::TickTockTxInfo> for TxDescriptionTickTock {
-    fn from(value: everscale_types::models::TickTockTxInfo) -> Self {
-        use everscale_types::models::TickTock;
+impl From<tycho_types::models::TickTockTxInfo> for TxDescriptionTickTock {
+    fn from(value: tycho_types::models::TickTockTxInfo) -> Self {
+        use tycho_types::models::TickTock;
 
         Self {
             aborted: value.aborted,
@@ -602,8 +602,8 @@ pub struct TxDescriptionOrdinary {
     pub bounce: Option<TxDescriptionBouncePhase>,
 }
 
-impl From<everscale_types::models::OrdinaryTxInfo> for TxDescriptionOrdinary {
-    fn from(value: everscale_types::models::OrdinaryTxInfo) -> Self {
+impl From<tycho_types::models::OrdinaryTxInfo> for TxDescriptionOrdinary {
+    fn from(value: tycho_types::models::OrdinaryTxInfo) -> Self {
         Self {
             aborted: value.aborted,
             destroyed: value.destroyed,
@@ -623,9 +623,9 @@ pub struct TxDescriptionStoragePhase {
     pub status_change: AccountStatusChange,
 }
 
-impl From<everscale_types::models::StoragePhase> for TxDescriptionStoragePhase {
+impl From<tycho_types::models::StoragePhase> for TxDescriptionStoragePhase {
     #[inline]
-    fn from(value: everscale_types::models::StoragePhase) -> Self {
+    fn from(value: tycho_types::models::StoragePhase) -> Self {
         Self {
             storage_fees_collected: value.storage_fees_collected,
             status_change: value.status_change.into(),
@@ -635,11 +635,11 @@ impl From<everscale_types::models::StoragePhase> for TxDescriptionStoragePhase {
 
 #[derive(Debug, Clone, Copy)]
 #[repr(transparent)]
-pub struct AccountStatus(everscale_types::models::AccountStatus);
+pub struct AccountStatus(tycho_types::models::AccountStatus);
 
 impl AccountStatus {
-    fn new_only_existing(status: everscale_types::models::AccountStatus) -> Option<Self> {
-        if status == everscale_types::models::AccountStatus::NotExists {
+    fn new_only_existing(status: tycho_types::models::AccountStatus) -> Option<Self> {
+        if status == tycho_types::models::AccountStatus::NotExists {
             None
         } else {
             Some(Self(status))
@@ -650,39 +650,39 @@ impl AccountStatus {
 impl Serialize for AccountStatus {
     fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
         serializer.serialize_str(match self.0 {
-            everscale_types::models::AccountStatus::Uninit => "uninit",
-            everscale_types::models::AccountStatus::Frozen => "frozen",
-            everscale_types::models::AccountStatus::Active => "active",
-            everscale_types::models::AccountStatus::NotExists => "nonexist",
+            tycho_types::models::AccountStatus::Uninit => "uninit",
+            tycho_types::models::AccountStatus::Frozen => "frozen",
+            tycho_types::models::AccountStatus::Active => "active",
+            tycho_types::models::AccountStatus::NotExists => "nonexist",
         })
     }
 }
 
-impl From<everscale_types::models::AccountStatus> for AccountStatus {
+impl From<tycho_types::models::AccountStatus> for AccountStatus {
     #[inline]
-    fn from(value: everscale_types::models::AccountStatus) -> Self {
+    fn from(value: tycho_types::models::AccountStatus) -> Self {
         Self(value)
     }
 }
 
 #[derive(Debug, Clone, Copy)]
 #[repr(transparent)]
-pub struct AccountStatusChange(everscale_types::models::AccountStatusChange);
+pub struct AccountStatusChange(tycho_types::models::AccountStatusChange);
 
 impl Serialize for AccountStatusChange {
     #[inline]
     fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
         serializer.serialize_str(match self.0 {
-            everscale_types::models::AccountStatusChange::Unchanged => "unchanged",
-            everscale_types::models::AccountStatusChange::Frozen => "frozen",
-            everscale_types::models::AccountStatusChange::Deleted => "deleted",
+            tycho_types::models::AccountStatusChange::Unchanged => "unchanged",
+            tycho_types::models::AccountStatusChange::Frozen => "frozen",
+            tycho_types::models::AccountStatusChange::Deleted => "deleted",
         })
     }
 }
 
-impl From<everscale_types::models::AccountStatusChange> for AccountStatusChange {
+impl From<tycho_types::models::AccountStatusChange> for AccountStatusChange {
     #[inline]
-    fn from(value: everscale_types::models::AccountStatusChange) -> Self {
+    fn from(value: tycho_types::models::AccountStatusChange) -> Self {
         Self(value)
     }
 }
@@ -694,8 +694,8 @@ pub struct TxDescriptionCreditPhase {
     pub credit: Tokens,
 }
 
-impl From<everscale_types::models::CreditPhase> for TxDescriptionCreditPhase {
-    fn from(value: everscale_types::models::CreditPhase) -> Self {
+impl From<tycho_types::models::CreditPhase> for TxDescriptionCreditPhase {
+    fn from(value: tycho_types::models::CreditPhase) -> Self {
         Self {
             due_fees_collected: value.due_fees_collected,
             credit: value.credit.tokens,
@@ -710,9 +710,9 @@ pub enum TxDescriptionComputePhase {
     Executed(TxDescriptionComputePhaseExecuted),
 }
 
-impl From<everscale_types::models::ComputePhase> for TxDescriptionComputePhase {
-    fn from(value: everscale_types::models::ComputePhase) -> Self {
-        use everscale_types::models::ComputePhase;
+impl From<tycho_types::models::ComputePhase> for TxDescriptionComputePhase {
+    fn from(value: tycho_types::models::ComputePhase) -> Self {
+        use tycho_types::models::ComputePhase;
 
         match value {
             ComputePhase::Skipped(phase) => Self::Skipped(phase.into()),
@@ -727,9 +727,9 @@ pub struct TxDescriptionComputePhaseSkipped {
     pub reason: &'static str,
 }
 
-impl From<everscale_types::models::SkippedComputePhase> for TxDescriptionComputePhaseSkipped {
-    fn from(value: everscale_types::models::SkippedComputePhase) -> Self {
-        use everscale_types::models::ComputePhaseSkipReason;
+impl From<tycho_types::models::SkippedComputePhase> for TxDescriptionComputePhaseSkipped {
+    fn from(value: tycho_types::models::SkippedComputePhase) -> Self {
+        use tycho_types::models::ComputePhaseSkipReason;
 
         Self {
             skipped: true,
@@ -768,8 +768,8 @@ pub struct TxDescriptionComputePhaseExecuted {
     pub vm_final_state_hash: HashBytes,
 }
 
-impl From<everscale_types::models::ExecutedComputePhase> for TxDescriptionComputePhaseExecuted {
-    fn from(value: everscale_types::models::ExecutedComputePhase) -> Self {
+impl From<tycho_types::models::ExecutedComputePhase> for TxDescriptionComputePhaseExecuted {
+    fn from(value: tycho_types::models::ExecutedComputePhase) -> Self {
         Self {
             skipped: false,
             success: value.success,
@@ -808,8 +808,8 @@ pub struct TxDescriptionActionPhase {
     pub tot_msg_size: MessageSize,
 }
 
-impl From<everscale_types::models::ActionPhase> for TxDescriptionActionPhase {
-    fn from(value: everscale_types::models::ActionPhase) -> Self {
+impl From<tycho_types::models::ActionPhase> for TxDescriptionActionPhase {
+    fn from(value: tycho_types::models::ActionPhase) -> Self {
         Self {
             success: value.success,
             valid: value.valid,
@@ -845,9 +845,9 @@ pub struct TxDescriptionBouncePhase {
     pub fwd_fees: Option<Tokens>,
 }
 
-impl From<everscale_types::models::BouncePhase> for TxDescriptionBouncePhase {
-    fn from(value: everscale_types::models::BouncePhase) -> Self {
-        use everscale_types::models::BouncePhase;
+impl From<tycho_types::models::BouncePhase> for TxDescriptionBouncePhase {
+    fn from(value: tycho_types::models::BouncePhase) -> Self {
+        use tycho_types::models::BouncePhase;
 
         let mut res = Self {
             ty: "",
@@ -915,7 +915,7 @@ pub struct Message {
 }
 
 impl Message {
-    pub fn load_raw(cell: &DynCell) -> Result<Self, everscale_types::error::Error> {
+    pub fn load_raw(cell: &DynCell) -> Result<Self, tycho_types::error::Error> {
         let hash = cell.repr_hash();
 
         let mut cs = cell.as_slice()?;
@@ -1030,7 +1030,7 @@ pub enum DecodedContent {
 }
 
 impl DecodedContent {
-    pub fn try_load(body: &DynCell) -> Result<Self, everscale_types::error::Error> {
+    pub fn try_load(body: &DynCell) -> Result<Self, tycho_types::error::Error> {
         let mut cs = body.as_slice()?;
         let tag = cs.load_u32()?;
         match tag {
@@ -1040,7 +1040,7 @@ impl DecodedContent {
                     comment: String::from_utf8_lossy(&bytes).into_owned(),
                 })
             }
-            _ => Err(everscale_types::error::Error::InvalidTag),
+            _ => Err(tycho_types::error::Error::InvalidTag),
         }
     }
 }

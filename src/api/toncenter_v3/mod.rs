@@ -9,13 +9,13 @@ use axum::http::{self, StatusCode};
 use axum::response::{IntoResponse, Response};
 use axum::routing::get;
 use bytes::Bytes;
-use everscale_types::models::{
-    BlockId, BlockIdShort, IntAddr, IntMsgInfo, MsgType, ShardIdent, StdAddr,
-};
-use everscale_types::prelude::*;
 use serde::Serialize;
 use tycho_rpc::util::mime::APPLICATION_JSON;
 use tycho_rpc::{BriefBlockInfo, RpcSnapshot, RpcState, RpcStateError, TransactionInfo};
+use tycho_types::models::{
+    BlockId, BlockIdShort, IntAddr, IntMsgInfo, MsgType, ShardIdent, StdAddr,
+};
+use tycho_types::prelude::*;
 use tycho_util::FastHashSet;
 
 use self::models::{Transaction, *};
@@ -696,7 +696,7 @@ async fn get_adjacent_transactions(
     let Some(tx) = state.get_transaction(&query.hash, Some(&snapshot))? else {
         return Err(ErrorResponse::not_found("adjacent transactions not found"));
     };
-    let tx: everscale_types::models::Transaction =
+    let tx: tycho_types::models::Transaction =
         BocRepr::decode(tx).map_err(RpcStateError::internal)?;
 
     let mut tx_count = 0usize;
@@ -866,7 +866,7 @@ async fn get_transactions_by_message(
         } else {
             (|| {
                 // Partially parse destination transaction.
-                let tx = dst_tx_root.parse::<everscale_types::models::Transaction>()?;
+                let tx = dst_tx_root.parse::<tycho_types::models::Transaction>()?;
                 // Parse message info to find its source transaction.
                 if let Some(in_msg) = tx.in_msg {
                     let mut cs = in_msg.as_slice()?;
@@ -878,7 +878,7 @@ async fn get_transactions_by_message(
                     }
                 }
 
-                Ok::<_, everscale_types::error::Error>(())
+                Ok::<_, tycho_types::error::Error>(())
             })()
             .map_err(ErrorResponse::internal)?;
         }

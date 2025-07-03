@@ -1,11 +1,11 @@
 use anyhow::Result;
-use everscale_types::models::StdAddr;
-use everscale_types::prelude::*;
-use num_bigint::BigInt;
+use num_bigint::{BigInt, BigUint};
+use tycho_types::models::StdAddr;
+use tycho_types::prelude::*;
 use tycho_vm::{OwnedCellSlice, RcStackValue, SafeRc, Stack, StackValueType};
 
 pub fn compute_method_id(bytes: impl AsRef<[u8]>) -> i64 {
-    everscale_types::crc::crc_16(bytes.as_ref()) as i64 | 0x10000
+    tycho_types::crc::crc_16(bytes.as_ref()) as i64 | 0x10000
 }
 
 pub struct StackParser {
@@ -44,6 +44,12 @@ impl StackParser {
             .into_int()
             .map(SafeRc::unwrap_or_clone)
             .map_err(Into::into)
+    }
+
+    pub fn pop_uint(&mut self) -> Result<BigUint> {
+        let (sign, int) = self.pop_int()?.into_parts();
+        anyhow::ensure!(sign != num_bigint::Sign::Minus, "expected non-negative int");
+        Ok(int)
     }
 
     pub fn pop_bool(&mut self) -> Result<bool> {
@@ -125,7 +131,7 @@ pub enum StackParseOrigin {
 pub fn load_bytes_rope(
     mut cs: CellSlice<'_>,
     strict: bool,
-) -> Result<Vec<u8>, everscale_types::error::Error> {
+) -> Result<Vec<u8>, tycho_types::error::Error> {
     let mut result = Vec::new();
     let mut buffer = [0u8; 128];
     loop {
@@ -135,7 +141,7 @@ pub fn load_bytes_rope(
 
         match cs.size_refs() {
             0 => break,
-            2.. if strict => return Err(everscale_types::error::Error::InvalidData),
+            2.. if strict => return Err(tycho_types::error::Error::InvalidData),
             _ => cs = cs.load_reference_as_slice()?,
         }
     }

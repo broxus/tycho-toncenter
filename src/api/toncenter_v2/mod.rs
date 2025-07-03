@@ -10,9 +10,6 @@ use axum::http::status::StatusCode;
 use axum::response::{IntoResponse, Response};
 use axum::routing::{get, post};
 use axum::{Json, RequestExt};
-use everscale_types::models::*;
-use everscale_types::num::Tokens;
-use everscale_types::prelude::*;
 use futures_util::future::Either;
 use num_bigint::BigInt;
 use serde::Serialize;
@@ -29,6 +26,9 @@ use tycho_rpc::{
     BadRequestError, BlockTransactionsCursor, GenTimings, LoadedAccountState, RpcState,
     RpcStateError, RunGetMethodPermit,
 };
+use tycho_types::models::*;
+use tycho_types::num::Tokens;
+use tycho_types::prelude::*;
 use tycho_util::metrics::HistogramGuard;
 use tycho_util::sync::rayon_run;
 
@@ -574,7 +574,7 @@ fn get_token_data(
 async fn handle_get_token_data(id: JrpcId, state: RpcState, p: AccountParams) -> Response {
     enum RunMethodError {
         RpcError(RpcStateError),
-        Internal(everscale_types::error::Error),
+        Internal(tycho_types::error::Error),
     }
 
     fn err_not_appliable(id: JrpcId) -> Response {
@@ -963,8 +963,8 @@ fn post_run_get_method(
 async fn handle_run_get_method(id: JrpcId, state: RpcState, p: RunGetMethodParams) -> Response {
     enum RunMethodError {
         RpcError(RpcStateError),
-        InvalidParams(everscale_types::error::Error),
-        Internal(everscale_types::error::Error),
+        InvalidParams(tycho_types::error::Error),
+        Internal(tycho_types::error::Error),
         TooBigStack(usize),
     }
 
@@ -1176,7 +1176,7 @@ fn run_getter(
     method_id: i64,
     mut stack: Vec<tycho_vm::RcStackValue>,
     gas_limit: u64,
-) -> Result<GetterOutput, everscale_types::error::Error> {
+) -> Result<GetterOutput, tycho_types::error::Error> {
     // Prepare stack.
     stack.push(tycho_vm::RcStackValue::new_dyn_value(BigInt::from(
         method_id,

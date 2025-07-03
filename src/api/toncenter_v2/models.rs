@@ -5,15 +5,7 @@ use std::sync::OnceLock;
 
 use anyhow::Context;
 use base64::prelude::{BASE64_STANDARD, Engine as _};
-use everscale_types::error::Error;
-use everscale_types::models::{
-    Base64StdAddrFlags, BlockId, DisplayBase64StdAddr, IntAddr, Message, MsgInfo, StdAddr,
-    StdAddrFormat, Transaction, TxInfo,
-};
-use everscale_types::num::Tokens;
-use everscale_types::prelude::*;
 use num_bigint::BigInt;
-use rand::Rng;
 use serde::ser::{SerializeSeq, SerializeStruct};
 use serde::{Deserialize, Serialize};
 use sha2::Digest;
@@ -27,6 +19,13 @@ use tycho_rpc::util::serde_helpers::{
 use tycho_rpc::{
     BlockTransactionIdsIter, BlockTransactionsIterBuilder, BriefShardDescr, TransactionsIterBuilder,
 };
+use tycho_types::error::Error;
+use tycho_types::models::{
+    Base64StdAddrFlags, BlockId, DisplayBase64StdAddr, IntAddr, Message, MsgInfo, StdAddr,
+    StdAddrFormat, Transaction, TxInfo,
+};
+use tycho_types::num::Tokens;
+use tycho_types::prelude::*;
 use tycho_util::FastHashMap;
 
 use crate::util::tonlib_helpers::{StackParser, load_bytes_rope};
@@ -533,7 +532,7 @@ pub enum TokenDataAttributes {
 }
 
 impl TokenDataAttributes {
-    pub fn parse_value(mut value: CellSlice<'_>) -> Result<Vec<u8>, everscale_types::error::Error> {
+    pub fn parse_value(mut value: CellSlice<'_>) -> Result<Vec<u8>, tycho_types::error::Error> {
         if value.is_data_empty() {
             value = value.load_reference_as_slice()?;
         }
@@ -549,7 +548,7 @@ impl TokenDataAttributes {
                 }
                 Ok(data)
             }
-            _ => Err(everscale_types::error::Error::InvalidTag),
+            _ => Err(tycho_types::error::Error::InvalidTag),
         }
     }
 }
@@ -1563,7 +1562,7 @@ impl std::fmt::Display for TonlibExtra {
             .unwrap()
             .as_secs_f64();
 
-        let rand: f32 = rand::thread_rng().r#gen();
+        let rand: f32 = rand::random();
 
         write!(f, "{now}:0:{rand}")
     }

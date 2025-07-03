@@ -1,13 +1,12 @@
 use anyhow::{Result, anyhow};
-use everscale_types::dict::Dict;
-use everscale_types::models::{
-    Account, AccountState, BlockchainConfigParams, CurrencyCollection, IntAddr, LibDescr,
-    ShardAccount, ShardAccounts, StdAddr,
-};
-use everscale_types::num::Tokens;
-use everscale_types::prelude::*;
 use num_bigint::BigInt;
 use tycho_rpc::GenTimings;
+use tycho_types::dict::Dict;
+use tycho_types::models::{
+    Account, AccountState, BlockchainConfigParams, CurrencyCollection, IntAddr, LibDescr, StdAddr,
+};
+use tycho_types::num::Tokens;
+use tycho_types::prelude::*;
 use tycho_vm::{
     BehaviourModifiers, GasParams, RcStackValue, SafeRc, SmcInfoTonV6, Stack, UnpackedConfig,
 };
@@ -18,7 +17,7 @@ use crate::util::tonlib_helpers::StackParser;
 
 #[derive(Debug)]
 pub struct GetJettonDataOutput {
-    pub total_supply: num_bigint::BigInt,
+    pub total_supply: num_bigint::BigUint,
     pub mintable: bool,
     pub admin_address: Option<StdAddr>,
     pub jetton_content: Cell,
@@ -29,7 +28,7 @@ impl FromStack for GetJettonDataOutput {
     fn from_stack(stack: Stack) -> Result<Self> {
         let mut parser = StackParser::begin_from_bottom(stack);
         Ok(Self {
-            total_supply: parser.pop_int()?,
+            total_supply: parser.pop_uint()?,
             mintable: parser.pop_bool()?,
             admin_address: parser.pop_address_or_none()?,
             jetton_content: parser.pop_cell()?,
@@ -60,10 +59,33 @@ impl FromStack for GetWalletAddressOutput {
     }
 }
 
+#[derive(Debug)]
+pub struct GetWalletDataOutput {
+    pub balance: num_bigint::BigUint,
+    pub owner: StdAddr,
+    pub jetton: StdAddr,
+}
+
+impl FromStack for GetWalletDataOutput {
+    fn from_stack(stack: Stack) -> Result<Self> {
+        let mut parser = StackParser::begin_from_bottom(stack);
+        let res = Self {
+            balance: parser.pop_uint()?,
+            owner: parser.pop_address()?,
+            jetton: parser.pop_address()?,
+        };
+        parser.pop_cell()?;
+        Ok(res)
+    }
+
+    fn field_count_hint() -> Option<usize> {
+        Some(4)
+    }
+}
+
 // === Executor ===
 
-pub struct SimpleExecutor<P> {
-    pub state_provider: P,
+pub struct SimpleExecutor {
     pub libraries: Dict<HashBytes, LibDescr>,
     pub raw_config: BlockchainConfigParams,
     pub unpacked_config: UnpackedConfig,
@@ -71,48 +93,84 @@ pub struct SimpleExecutor<P> {
     pub modifiers: BehaviourModifiers,
 }
 
-impl<P> SimpleExecutor<P> {
+impl SimpleExecutor {
     pub fn new(
-        state_provider: P,
+        config: BlockchainConfigParams,
         libraries: Dict<HashBytes, LibDescr>,
-        raw_config: BlockchainConfigParams,
         timings: GenTimings,
     ) -> Result<Self> {
-        let unpacked_config = SmcInfoTonV6::unpack_config_partial(&raw_config, timings.gen_utime)?;
-
         Ok(Self {
-            state_provider,
             libraries,
-            raw_config,
-            unpacked_config,
+            unpacked_config: SmcInfoTonV6::unpack_config_partial(&config, timings.gen_utime)?,
+            raw_config: config,
             timings,
             modifiers: Default::default(),
         })
     }
-}
 
-impl<P: StateProvider> SimpleExecutor<P> {
-    pub fn run_getter<R: FromStack>(
-        &self,
-        address: &StdAddr,
-        params: RunGetterParams,
-    ) -> Result<R, ExecutorError> {
-        // Find account state in shard accounts dictionary.
-        let Some(account) = self.state_provider.get_state(address)? else {
-            return Err(ExecutorError::NotFound);
+    pub fn resolve_library(&self, code: &Cell) -> Result<Cell, tycho_types::error::Error> {
+        debug_assert!(code.descriptor().is_library());
+
+        let mut cs = code.as_slice()?;
+        cs.skip_first(8, 0)?;
+
+        let lib_hash = cs.load_u256()?;
+        let Some(descr) = self.libraries.get(&lib_hash)? else {
+            return Err(tycho_types::error::Error::CellUnderflow);
         };
 
+        Ok(descr.lib)
+    }
+
+    pub fn run_getter<R: FromStack>(
+        &self,
+        account: Account,
+        params: RunGetterParams,
+    ) -> Result<R, ExecutorError> {
+        let VmOutput {
+            exit_code, stack, ..
+        } = self.run_getter_raw(account, params)?;
+
+        // Parse output.
+        if exit_code != 0 {
+            return Err(ExecutorError::FailedToParse(anyhow!(
+                "non-zero result code: {exit_code}"
+            )));
+        }
+
+        if let Some(require_fields) = R::field_count_hint() {
+            if stack.items.len() < require_fields {
+                return Err(ExecutorError::FailedToParse(anyhow!(
+                    "too few stack arguments"
+                )));
+            }
+        }
+
+        R::from_stack(stack).map_err(ExecutorError::FailedToParse)
+    }
+
+    // TODO: Use in toncenter V2 API.
+    pub fn run_getter_raw(
+        &self,
+        account: Account,
+        params: RunGetterParams,
+    ) -> Result<VmOutput, ExecutorError> {
+        let IntAddr::Std(address) = account.address else {
+            return Err(ExecutorError::StateAccess(
+                tycho_types::error::Error::InvalidTag,
+            ));
+        };
         let AccountState::Active(state_init) = account.state else {
             return Err(ExecutorError::AccountNotActive);
         };
 
-        let code = match state_init.code {
-            // Resolve library cells.
-            Some(code) if code.descriptor().is_library() => self.resolve_library(code)?,
-            // Otherwise just use the code if any.
-            Some(code) => code,
-            // Or return a fatal error.
-            None => return Err(ExecutorError::Exception(14)),
+        let Some(code) = state_init.code else {
+            return Ok(VmOutput {
+                // TODO: Verify sign.
+                exit_code: -14,
+                gas_used: 0,
+                stack: Default::default(),
+            });
         };
 
         // Prepare VM state.
@@ -148,78 +206,16 @@ impl<P: StateProvider> SimpleExecutor<P> {
         // Run VM.
         let exit_code = !vm.run();
 
-        // Parse output.
-        if exit_code != 0 {
-            return Err(ExecutorError::Exception(exit_code));
-        }
-        if let Some(require_fields) = R::field_count_hint() {
-            if vm.stack.items.len() < require_fields {
-                return Err(ExecutorError::FailedToParse(anyhow!(
-                    "too few stack arguments"
-                )));
-            }
-        }
-
+        // Prepare output.
         let stack = std::mem::take(&mut vm.stack);
+        let gas_used = vm.gas.consumed();
         drop(vm);
 
-        R::from_stack(SafeRc::unwrap_or_clone(stack)).map_err(ExecutorError::FailedToParse)
-    }
-
-    fn resolve_library(&self, code: Cell) -> Result<Cell, everscale_types::error::Error> {
-        debug_assert!(code.descriptor().is_library());
-
-        let mut cs = code.as_slice()?;
-        cs.skip_first(8, 0)?;
-
-        let lib_hash = cs.load_u256()?;
-        let Some(descr) = self.libraries.get(&lib_hash)? else {
-            return Err(everscale_types::error::Error::CellUnderflow);
-        };
-
-        Ok(descr.lib)
-    }
-}
-
-pub trait StateProvider {
-    fn get_state(
-        &self,
-        address: &StdAddr,
-    ) -> Result<Option<Account>, everscale_types::error::Error>;
-}
-
-pub struct ShardStateProvider {
-    pub workchain: i32,
-    pub accounts: ShardAccounts,
-}
-
-impl StateProvider for ShardStateProvider {
-    fn get_state(
-        &self,
-        address: &StdAddr,
-    ) -> Result<Option<Account>, everscale_types::error::Error> {
-        if self.workchain != address.workchain as i32 {
-            return Ok(None);
-        }
-        let Some((_, state)) = self.accounts.get(&address.address)? else {
-            return Ok(None);
-        };
-        Ok(state.load_account()?)
-    }
-}
-
-impl StateProvider for Account {
-    fn get_state(
-        &self,
-        account: &StdAddr,
-    ) -> Result<Option<Account>, everscale_types::error::Error> {
-        Ok(
-            if matches!(&self.address, IntAddr::Std(addr) if addr == account) {
-                Some(self.clone())
-            } else {
-                None
-            },
-        )
+        Ok(VmOutput {
+            exit_code,
+            stack: SafeRc::unwrap_or_clone(stack),
+            gas_used,
+        })
     }
 }
 
@@ -276,6 +272,13 @@ impl MethodId for i64 {
     }
 }
 
+impl MethodId for u64 {
+    #[inline]
+    fn compute_id(&self) -> i64 {
+        *self as i64
+    }
+}
+
 impl MethodId for &str {
     #[inline]
     fn compute_id(&self) -> i64 {
@@ -296,27 +299,28 @@ pub trait FromStack: Sized {
     fn field_count_hint() -> Option<usize>;
 }
 
+pub struct VmOutput {
+    pub exit_code: i32,
+    pub stack: Stack,
+    pub gas_used: u64,
+}
+
 #[derive(Debug, thiserror::Error)]
 pub enum ExecutorError {
     #[error("failed to prepare account state: {0}")]
-    StateAccess(#[from] everscale_types::error::Error),
-    #[error("account state not found")]
-    NotFound,
+    StateAccess(#[from] tycho_types::error::Error),
     #[error("account is not active")]
     AccountNotActive,
-    #[error("non-zero result code: {0}")]
-    Exception(i32),
     #[error("failed to parse output: {0}")]
     FailedToParse(anyhow::Error),
 }
 
 #[cfg(test)]
 mod tests {
-    use everscale_types::models::{BlockchainConfig, StateInit};
+    use tycho_types::models::{BlockchainConfig, StateInit};
     use tycho_vm::{OwnedCellSlice, tuple};
 
     use super::*;
-    use crate::util::tonlib_helpers::load_bytes_rope;
 
     const STUB_ADDR: StdAddr = StdAddr::new(0, HashBytes::ZERO);
     const STUB_BALANCE: CurrencyCollection = CurrencyCollection::new(1_000_000_000);
@@ -349,30 +353,49 @@ mod tests {
             "te6cckECFQEAA6oAAgtcugyJMBgBAgAyAAAAAdrBf5WNLuUjoiBiBplFl8E9gx7HBgEU/wD0pBP0vPLICwMCAWIEBQICywYHABug9gXaiaH0AfSB9IGpowIBzggJAgFYDA0C9wgxwCSXwTgAdDTAwFxsJUTXwPwHeD6QPpAMfoAMXHXIfoAMfoAMHOptAAC0x8B2zxbMjQ0NCSCEA+KfqW6mjBsIjZeMRAj8BrgJIIQF41FGbqbMGwiXjIQJEMA8BvgN1s2ghBZXwe8up8CcbDy0sBQI7ry4sYB8BzgXwWAKCwARPpEMMAA8uFNgAFyAT/gzIG6VMICx+DPeIG7y0prQ0wcx0//T//QE0wfUMND6APoA+gD6APoA+gAwAAiED/LwAgFYDg8CAUgTFAH3AXTPwEB+gD6QCHwAe1E0PoA+kD6QNTRUTahUizHBfLiwSrC//LiwlQ0QnBUIBNUFAPIUAT6AljPFgHPFszJIsjLARL0APQAywDJIHAB+QB0yMsCEsoHy//J0AT6QPQEMfoAINdJwgDy4sTIgBgBywVQB88WcPoCdwHLa4BAC8ztRND6APpA+kDU0QrTPwEB+gBRUaAF+kD6QFNdxwVUc29wVCATVBQDyFAE+gJYzxYBzxbMySLIywES9AD0AMsAyXAB+QB0yMsCEsoHy//J0FAPxwUesfLiwwz6AFHKoSm2CBmhUAegGKEmkmxV4w0l1wsBwwAhwgCwgERIAqhPMyIIQF41FGVgKAssfyz9QB/oCIs8WUAbPFiX6AlADzxbJUAXMI5FykXHiUAeoE6AIqgBQBKAXoBS88uLFAcmAQPsAQwDIUAT6AljPFgHPFszJ7VQAclJpoBihyIIQc2LQnCkCyx/LP1AH+gJQBM8WUAfPFsnIgBABywUnzxZQBPoCcQHLahPMyXH7AFBCEwB0jiPIgBABywVQBs8WUAX6AnABy2qCENUydttYBQLLH8s/yXL7AJJbM+JAA8hQBPoCWM8WAc8WzMntVADrO1E0PoA+kD6QNTRBdM/AQH6ACHCAPLiwvpA9AQB0NOf0QHRUWKhUljHBfLiwSbC//LiwsiCEHvdl95YBALLH8s/AfoCI88WAc8WE8ufyciAGAHLBSPPFnD6AnEBy2rMyYBA+wBAE8hQBPoCWM8WAc8WzMntVIACHIAg1yHtRND6APpA+kDU0QTTHwGEDyGCEBeNRRm6AoIQe92X3roSsfL00z8BMPoAMBOgUCPIUAT6AljPFgHPFszJ7VSBn+5gZ",
         )?;
 
-        let executor = SimpleExecutor::new(
-            stub_account(code, data),
-            Dict::new(),
-            default_config(),
-            GenTimings {
-                gen_lt: 1_000_000,
-                gen_utime: 1000,
-            },
-        )?;
+        let executor = SimpleExecutor::new(default_config(), Dict::new(), GenTimings {
+            gen_lt: 1_000_000,
+            gen_utime: 1000,
+        })?;
 
-        let output = executor
-            .run_getter::<GetJettonDataOutput>(&STUB_ADDR, RunGetterParams::new("get_jetton_data"))
-            .unwrap();
+        let account = stub_account(code, data);
+
+        let output = executor.run_getter::<GetJettonDataOutput>(
+            account.clone(),
+            RunGetterParams::new("get_jetton_data"),
+        )?;
         println!("{output:#?}");
 
         let arg = OwnedCellSlice::new_allow_exotic(CellBuilder::build_from(STUB_ADDR).unwrap());
         let output = executor
             .run_getter::<GetWalletAddressOutput>(
-                &STUB_ADDR,
+                account,
                 RunGetterParams::new("get_wallet_address").with_args(tuple![
                     slice arg,
                 ]),
             )
             .unwrap();
+        println!("{output:#?}");
+
+        Ok(())
+    }
+
+    #[test]
+    fn jetton_wallet_getter_works() -> Result<()> {
+        let code = Boc::decode(include_bytes!("./test/jetton_wallet_code.boc"))?;
+        let data = Boc::decode_base64(
+            "te6ccgECFAEAA9EAAZFQTAW7AjgB8zYowBXIml4lYvHRjdV68RJV0Fi8i20THzvW/WQH84kAHKcE7bfLAfL8KBqtj00r0VPPTIOwbzY+1xtJNCAahfCgAQEU/wD0pBP0vPLICwICAWIDBAICywUGABug9gXaiaH0AfSB9IGpowIBzgcIAgFYCwwC9wgxwCSXwTgAdDTAwFxsJUTXwPwHeD6QPpAMfoAMXHXIfoAMfoAMHOptAAC0x8B2zxbMjQ0NCSCEA+KfqW6mjBsIjZeMRAj8BrgJIIQF41FGbqbMGwiXjIQJEMA8BvgN1s2ghBZXwe8up8CcbDy0sBQI7ry4sYB8BzgXwWAJCgARPpEMMAA8uFNgAFyAT/gzIG6VMICx+DPeIG7y0prQ0wcx0//T//QE0wfUMND6APoA+gD6APoA+gAwAAiED/LwAgFYDQ4CAUgSEwH3AXTPwEB+gD6QCHwAe1E0PoA+kD6QNTRUTahUizHBfLiwSrC//LiwlQ0QnBUIBNUFAPIUAT6AljPFgHPFszJIsjLARL0APQAywDJIHAB+QB0yMsCEsoHy//J0AT6QPQEMfoAINdJwgDy4sTIgBgBywVQB88WcPoCdwHLa4A8C8ztRND6APpA+kDU0QrTPwEB+gBRUaAF+kD6QFNdxwVUc29wVCATVBQDyFAE+gJYzxYBzxbMySLIywES9AD0AMsAyXAB+QB0yMsCEsoHy//J0FAPxwUesfLiwwz6AFHKoSm2CBmhUAegGKEmkmxV4w0l1wsBwwAhwgCwgEBEAqhPMyIIQF41FGVgKAssfyz9QB/oCIs8WUAbPFiX6AlADzxbJUAXMI5FykXHiUAeoE6AIqgBQBKAXoBS88uLFAcmAQPsAQwDIUAT6AljPFgHPFszJ7VQAclJpoBihyIIQc2LQnCkCyx/LP1AH+gJQBM8WUAfPFsnIgBABywUnzxZQBPoCcQHLahPMyXH7AFBCEwB0jiPIgBABywVQBs8WUAX6AnABy2qCENUydttYBQLLH8s/yXL7AJJbM+JAA8hQBPoCWM8WAc8WzMntVADrO1E0PoA+kD6QNTRBdM/AQH6ACHCAPLiwvpA9AQB0NOf0QHRUWKhUljHBfLiwSbC//LiwsiCEHvdl95YBALLH8s/AfoCI88WAc8WE8ufyciAGAHLBSPPFnD6AnEBy2rMyYBA+wBAE8hQBPoCWM8WAc8WzMntVIACHIAg1yHtRND6APpA+kDU0QTTHwGEDyGCEBeNRRm6AoIQe92X3roSsfL00z8BMPoAMBOgUCPIUAT6AljPFgHPFszJ7VSA=",
+        )?;
+
+        let executor = SimpleExecutor::new(default_config(), Dict::new(), GenTimings {
+            gen_lt: 1_000_000,
+            gen_utime: 1000,
+        })?;
+
+        let account = stub_account(code, data);
+
+        let output = executor
+            .run_getter::<GetWalletDataOutput>(account, RunGetterParams::new("get_wallet_data"))?;
         println!("{output:#?}");
 
         Ok(())
