@@ -18,6 +18,7 @@ use tycho_util::cli;
 use tycho_util::cli::config::ThreadPoolConfig;
 use tycho_util::cli::logger::LoggerConfig;
 use tycho_util::cli::metrics::MetricsConfig;
+use tycho_util::config::PartialConfig;
 use tycho_util::futures::JoinTask;
 use tycho_util::serde_helpers::load_json_from_file;
 
@@ -31,6 +32,13 @@ pub struct Cmd {
         conflicts_with_all = ["config", "global_config", "keys", "logger_config", "import_zerostate"]
     )]
     pub init_config: Option<PathBuf>,
+
+    #[clap(
+        long,
+        short,
+        conflicts_with_all = ["config", "global_config", "keys", "logger_config", "import_zerostate"]
+    )]
+    pub all: bool,
 
     /// overwrite the existing config
     #[clap(short, long)]
@@ -65,7 +73,13 @@ impl Cmd {
             }
 
             let config = NodeConfig::default();
-            std::fs::write(config_path, serde_json::to_string_pretty(&config).unwrap())?;
+            let config = if self.all {
+                serde_json::to_string_pretty(&config)
+            } else {
+                serde_json::to_string_pretty(&config.into_partial())
+            }
+            .unwrap();
+            std::fs::write(config_path, config)?;
             return Ok(());
         }
 
@@ -187,13 +201,30 @@ impl Cmd {
     }
 }
 
-#[derive(Default, Debug, Clone, Serialize, Deserialize)]
+#[derive(PartialConfig, Debug, Clone, Serialize, Deserialize)]
 #[serde(default)]
 struct NodeConfig {
+    #[partial]
     #[serde(flatten)]
     base: NodeBaseConfig,
+    #[important]
     threads: ThreadPoolConfig,
+    #[important]
     logger_config: LoggerConfig,
+    #[important]
     metrics: Option<MetricsConfig>,
+    #[partial]
     rpc: RpcConfig,
+}
+
+impl Default for NodeConfig {
+    fn default() -> Self {
+        Self {
+            base: NodeBaseConfig::default(),
+            threads: ThreadPoolConfig::default(),
+            logger_config: LoggerConfig::default(),
+            metrics: Some(MetricsConfig::default()),
+            rpc: RpcConfig::default(),
+        }
+    }
 }

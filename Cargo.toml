@@ -9,7 +9,7 @@ license = "MIT OR Apache-2.0"
 
 [dependencies]
 anyhow = "1.0"
-axum = "0.7"
+axum = "0.8"
 base64 = "0.22.0"
 bb8 = "0.9"
 bytes = "1.0"
@@ -45,6 +45,13 @@ tycho-vm = "0.2.0"
 [dev-dependencies]
 tycho-util = { version = "0.2.11", features = ["cli", "test"] }
 tycho-storage = { version = "0.2.11", features = ["test"] }
+
+[patch.crates-io]
+tycho-block-util = { git = "https://github.com/broxus/tycho.git", rev = "3b74a11755cf03f74255fd2b47ff9a23221eab8e" }
+tycho-core = { git = "https://github.com/broxus/tycho.git", rev = "3b74a11755cf03f74255fd2b47ff9a23221eab8e" }
+tycho-rpc = { git = "https://github.com/broxus/tycho.git", rev = "3b74a11755cf03f74255fd2b47ff9a23221eab8e" }
+tycho-storage = { git = "https://github.com/broxus/tycho.git", rev = "3b74a11755cf03f74255fd2b47ff9a23221eab8e" }
+tycho-util = { git = "https://github.com/broxus/tycho.git", rev = "3b74a11755cf03f74255fd2b47ff9a23221eab8e" }
 
 [build-dependencies]
 anyhow = "1.0"
