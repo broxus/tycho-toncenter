@@ -236,11 +236,13 @@ impl RunGetterParams {
         }
     }
 
+    #[allow(unused)]
     pub fn with_args<I: IntoIterator<Item = RcStackValue>>(mut self, args: I) -> Self {
         self.args = args.into_iter().collect();
         self
     }
 
+    #[allow(unused)]
     pub fn with_gas_limit(mut self, limit: u64) -> Self {
         self.gas_limit = limit;
         self

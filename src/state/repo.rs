@@ -1,5 +1,6 @@
 use std::fmt::Write;
 use std::path::Path;
+use std::sync::Mutex;
 use std::time::Instant;
 
 use anyhow::{Context, Result};
@@ -64,17 +65,67 @@ impl TokensRepo {
         Ok(Self { writer, readers })
     }
 
-    pub async fn insert_known_interfaces(&self, rows: Vec<KnownInterface>) -> Result<usize> {
-        self.insert_rows_simple(rows, |sql, values| {
-            write!(
-                sql,
-                "INSERT INTO known_interfaces (code_hash,interface,is_broken) \
-                VALUES {values} \
-                ON CONFLICT(code_hash) DO UPDATE SET \
-                    is_broken = excluded.is_broken"
-            )
+    pub async fn with_transaction<F>(&self, f: F) -> Result<usize>
+    where
+        for<'a> F: FnOnce(&TokensRepoTransaction),
+    {
+        let tx = TokensRepoTransaction::default();
+        f(&tx);
+        self.write(tx).await
+    }
+
+    pub async fn write(&self, tx: TokensRepoTransaction) -> Result<usize> {
+        let batches = tx.batches.into_inner().unwrap();
+        if batches.is_empty() {
+            return Ok(0);
+        }
+
+        self.writer
+            .dispatch(move |conn| {
+                let tx = conn.transaction()?;
+
+                let mut affected_rows = 0usize;
+                for batch in batches {
+                    affected_rows += batch(&tx)?;
+                }
+
+                let started_at = Instant::now();
+                tx.commit()?;
+                tracing::warn!(
+                    elapsed = %humantime::format_duration(started_at.elapsed()),
+                    affected_rows,
+                    "commit",
+                );
+
+                Ok(affected_rows)
+            })
+            .await
+    }
+
+    pub fn write_blocking(&self, tx: TokensRepoTransaction) -> Result<usize> {
+        let batches = tx.batches.into_inner().unwrap();
+        if batches.is_empty() {
+            return Ok(0);
+        }
+
+        self.writer.dispatch_blocking(move |conn| {
+            let tx = conn.transaction()?;
+
+            let mut affected_rows = 0usize;
+            for batch in batches {
+                affected_rows += batch(&tx)?;
+            }
+
+            let started_at = Instant::now();
+            tx.commit()?;
+            tracing::warn!(
+                elapsed = %humantime::format_duration(started_at.elapsed()),
+                affected_rows,
+                "commit",
+            );
+
+            Ok(affected_rows)
         })
-        .await
     }
 
     pub async fn get_all_known_interfaces(&self) -> Result<FastHashMap<HashBytes, InterfaceType>> {
@@ -89,29 +140,6 @@ impl TokensRepo {
         })?
         .collect::<rusqlite::Result<_>>()
         .map_err(Into::into)
-    }
-
-    pub async fn insert_jetton_masters(&self, rows: Vec<JettonMaster>) -> Result<usize> {
-        self.insert_rows_simple(rows, |sql, values| {
-            write!(
-                sql,
-                "INSERT INTO jetton_masters (address,total_supply,mintable,\
-                admin_address,jetton_content,wallet_code_hash,last_transaction_lt,\
-                code_hash,data_hash) \
-                VALUES {values} \
-                ON CONFLICT(address) DO UPDATE SET \
-                    total_supply = excluded.total_supply, \
-                    mintable = excluded.mintable, \
-                    admin_address = excluded.admin_address, \
-                    jetton_content = excluded.jetton_content, \
-                    wallet_code_hash = excluded.wallet_code_hash, \
-                    last_transaction_lt = excluded.last_transaction_lt, \
-                    code_hash = excluded.code_hash, \
-                    data_hash = excluded.data_hash \
-                WHERE last_transaction_lt < excluded.last_transaction_lt",
-            )
-        })
-        .await
     }
 
     // TODO: Return iterator itself.
@@ -164,26 +192,6 @@ impl TokensRepo {
         )?
         .collect::<rusqlite::Result<Vec<_>>>()
         .map_err(Into::into)
-    }
-
-    pub async fn insert_jetton_wallets(&self, rows: Vec<JettonWallet>) -> Result<usize> {
-        self.insert_rows_simple(rows, |sql, values| {
-            write!(
-                sql,
-                "INSERT INTO jetton_wallets (address,balance,owner,jetton,\
-                last_transaction_lt,code_hash,data_hash) \
-                VALUES {values} \
-                ON CONFLICT(address) DO UPDATE SET \
-                    balance = excluded.balance, \
-                    owner = excluded.owner, \
-                    jetton = excluded.jetton, \
-                    last_transaction_lt = excluded.last_transaction_lt, \
-                    code_hash = excluded.code_hash, \
-                    data_hash = excluded.data_hash \
-                WHERE last_transaction_lt < excluded.last_transaction_lt",
-            )
-        })
-        .await
     }
 
     pub async fn get_jetton_wallets(
@@ -258,15 +266,81 @@ impl TokensRepo {
         .collect::<rusqlite::Result<Vec<_>>>()
         .map_err(Into::into)
     }
+}
 
-    async fn insert_rows_simple<T, F>(&self, rows: Vec<T>, mut fmt: F) -> Result<usize>
+#[derive(Default)]
+pub struct TokensRepoTransaction {
+    // TODO: Use bumpalo.
+    batches: Mutex<Vec<Box<TokensRepoTransactionFn>>>,
+}
+
+impl TokensRepoTransaction {
+    pub fn insert_known_interfaces(&self, rows: Vec<KnownInterface>) {
+        self.insert_rows_simple(rows, |sql, values| {
+            write!(
+                sql,
+                "INSERT INTO known_interfaces (code_hash,interface,is_broken) \
+                VALUES {values} \
+                ON CONFLICT(code_hash) DO UPDATE SET \
+                    is_broken = excluded.is_broken"
+            )
+        })
+    }
+
+    pub fn insert_jetton_masters(&self, rows: Vec<JettonMaster>) {
+        self.insert_rows_simple(rows, |sql, values| {
+            write!(
+                sql,
+                "INSERT INTO jetton_masters (address,total_supply,mintable,\
+                admin_address,jetton_content,wallet_code_hash,last_transaction_lt,\
+                code_hash,data_hash) \
+                VALUES {values} \
+                ON CONFLICT(address) DO UPDATE SET \
+                    total_supply = excluded.total_supply, \
+                    mintable = excluded.mintable, \
+                    admin_address = excluded.admin_address, \
+                    jetton_content = excluded.jetton_content, \
+                    wallet_code_hash = excluded.wallet_code_hash, \
+                    last_transaction_lt = excluded.last_transaction_lt, \
+                    code_hash = excluded.code_hash, \
+                    data_hash = excluded.data_hash \
+                WHERE last_transaction_lt < excluded.last_transaction_lt",
+            )
+        })
+    }
+
+    pub fn insert_jetton_wallets(&self, rows: Vec<JettonWallet>) {
+        self.insert_rows_simple(rows, |sql, values| {
+            write!(
+                sql,
+                "INSERT INTO jetton_wallets (address,balance,owner,jetton,\
+                last_transaction_lt,code_hash,data_hash) \
+                VALUES {values} \
+                ON CONFLICT(address) DO UPDATE SET \
+                    balance = excluded.balance, \
+                    owner = excluded.owner, \
+                    jetton = excluded.jetton, \
+                    last_transaction_lt = excluded.last_transaction_lt, \
+                    code_hash = excluded.code_hash, \
+                    data_hash = excluded.data_hash \
+                WHERE last_transaction_lt < excluded.last_transaction_lt",
+            )
+        })
+    }
+
+    pub fn insert_rows_simple<T, F>(&self, rows: Vec<T>, mut fmt: F)
     where
         T: SqlColumnsRepr + KnownColumnCount + Send + 'static,
         F: FnMut(&mut String, &str) -> std::fmt::Result + Send + 'static,
     {
+        let row_count = rows.len();
+        if row_count == 0 {
+            return;
+        }
+
         let rows_per_batch = SQLITE_MAX_VARIABLE_NUMBER / T::COLUMN_COUNT;
-        let batch_count = rows.len() / rows_per_batch;
-        let tail_len = rows.len() % rows_per_batch;
+        let batch_count = row_count / rows_per_batch;
+        let tail_len = row_count % rows_per_batch;
 
         let started_at = Instant::now();
 
@@ -284,46 +358,38 @@ impl TokensRepo {
             "prepared param list"
         );
 
-        self.writer
-            .dispatch(move |conn| {
-                let tx = conn.transaction()?;
+        let f: Box<TokensRepoTransactionFn> = Box::new(move |tx| {
+            let mut rows = rows.iter();
+            let mut execute = |n: usize, values: &str| {
+                let mut stmt = QueryBuffer::with(|sql| {
+                    fmt(sql, values).unwrap();
+                    tracing::warn!(n, "add batch");
+                    tx.prepare(sql)
+                })?;
+                stmt.execute(params_from_iter(
+                    rows.by_ref()
+                        .take(n)
+                        .flat_map(|item| item.as_columns_iter()),
+                ))
+            };
 
-                let mut rows = rows.iter();
-                let mut execute = |n: usize, values: &str| {
-                    let mut stmt = QueryBuffer::with(|sql| {
-                        fmt(sql, values).unwrap();
-                        tracing::warn!(n, "add batch");
-                        tx.prepare(sql)
-                    })?;
-                    stmt.execute(params_from_iter(
-                        rows.by_ref()
-                            .take(n)
-                            .flat_map(|item| item.as_columns_iter()),
-                    ))
-                };
+            let mut affected_rows = 0usize;
+            for _ in 0..batch_count {
+                affected_rows += execute(rows_per_batch, batch_values)?;
+            }
+            if tail_len > 0 {
+                affected_rows += execute(tail_len, &tail_values)?;
+            }
+            assert!(rows.next().is_none());
+            Ok(affected_rows)
+        });
 
-                let mut affected_rows = 0usize;
-                for _ in 0..batch_count {
-                    affected_rows += execute(rows_per_batch, batch_values)?;
-                }
-                if tail_len > 0 {
-                    affected_rows += execute(tail_len, &tail_values)?;
-                }
-                assert!(rows.next().is_none());
-
-                let started_at = Instant::now();
-                tx.commit()?;
-                tracing::warn!(
-                    elapsed = %humantime::format_duration(started_at.elapsed()),
-                    affected_rows,
-                    "commit",
-                );
-
-                Ok(affected_rows)
-            })
-            .await
+        self.batches.lock().unwrap().push(f);
     }
 }
+
+type TokensRepoTransactionFn =
+    dyn FnOnce(&rusqlite::Transaction<'_>) -> rusqlite::Result<usize> + Send + 'static;
 
 fn get_version(connection: &Connection) -> Result<Option<(usize, usize, usize)>> {
     connection.execute(
@@ -354,9 +420,12 @@ fn get_version(connection: &Connection) -> Result<Option<(usize, usize, usize)>>
 
 fn prepare_connection(connection: &Connection) -> rusqlite::Result<()> {
     connection.execute_batch(
-        "PRAGMA journal_mode=WAL;
-        PRAGMA synchronous=normal;
-        PRAGMA journal_size_limit=6144000;",
+        "PRAGMA journal_mode=WAL;\
+        PRAGMA synchronous=normal;\
+        PRAGMA journal_size_limit=6144000;\
+        PRAGMA cache_size=10000;\
+        PRAGMA temp_store = MEMORY;\
+        PRAGMA mmap_size = 268435456;",
     )
 }
 
@@ -417,13 +486,19 @@ mod tests {
             code_hash: HashBytes::ZERO,
             data_hash: HashBytes::ZERO,
         });
-        let affected_rows = repo.insert_jetton_masters(to_insert.to_vec()).await?;
+        let affected_rows = repo
+            .with_transaction(|tx| tx.insert_jetton_masters(to_insert.to_vec()))
+            .await?;
         assert_eq!(affected_rows, to_insert.len());
-        let affected_rows = repo.insert_jetton_masters(to_insert.to_vec()).await?;
+        let affected_rows = repo
+            .with_transaction(|tx| tx.insert_jetton_masters(to_insert.to_vec()))
+            .await?;
         assert_eq!(affected_rows, 0);
 
         to_insert[1].last_transaction_lt += 1;
-        let affected_rows = repo.insert_jetton_masters(to_insert.to_vec()).await?;
+        let affected_rows = repo
+            .with_transaction(|tx| tx.insert_jetton_masters(to_insert.to_vec()))
+            .await?;
         assert_eq!(affected_rows, 1);
 
         for _ in 0..3 {
@@ -473,13 +548,19 @@ mod tests {
             code_hash: Some(HashBytes::ZERO),
             data_hash: Some(HashBytes::ZERO),
         });
-        let affected_rows = repo.insert_jetton_wallets(to_insert.to_vec()).await?;
+        let affected_rows = repo
+            .with_transaction(|tx| tx.insert_jetton_wallets(to_insert.to_vec()))
+            .await?;
         assert_eq!(affected_rows, to_insert.len());
-        let affected_rows = repo.insert_jetton_wallets(to_insert.to_vec()).await?;
+        let affected_rows = repo
+            .with_transaction(|tx| tx.insert_jetton_wallets(to_insert.to_vec()))
+            .await?;
         assert_eq!(affected_rows, 0);
 
         to_insert[1].last_transaction_lt += 1;
-        let affected_rows = repo.insert_jetton_wallets(to_insert.to_vec()).await?;
+        let affected_rows = repo
+            .with_transaction(|tx| tx.insert_jetton_wallets(to_insert.to_vec()))
+            .await?;
         assert_eq!(affected_rows, 1);
 
         for _ in 0..3 {

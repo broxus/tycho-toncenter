@@ -47,11 +47,11 @@ tycho-util = { version = "0.2.11", features = ["cli", "test"] }
 tycho-storage = { version = "0.2.11", features = ["test"] }
 
 [patch.crates-io]
-tycho-block-util = { git = "https://github.com/broxus/tycho.git", rev = "3b74a11755cf03f74255fd2b47ff9a23221eab8e" }
-tycho-core = { git = "https://github.com/broxus/tycho.git", rev = "3b74a11755cf03f74255fd2b47ff9a23221eab8e" }
-tycho-rpc = { git = "https://github.com/broxus/tycho.git", rev = "3b74a11755cf03f74255fd2b47ff9a23221eab8e" }
-tycho-storage = { git = "https://github.com/broxus/tycho.git", rev = "3b74a11755cf03f74255fd2b47ff9a23221eab8e" }
-tycho-util = { git = "https://github.com/broxus/tycho.git", rev = "3b74a11755cf03f74255fd2b47ff9a23221eab8e" }
+tycho-block-util = { git = "https://github.com/broxus/tycho.git", rev = "c8805e86e4f787744ef08705797cebc9ce840afe" }
+tycho-core = { git = "https://github.com/broxus/tycho.git", rev = "c8805e86e4f787744ef08705797cebc9ce840afe" }
+tycho-rpc = { git = "https://github.com/broxus/tycho.git", rev = "c8805e86e4f787744ef08705797cebc9ce840afe" }
+tycho-storage = { git = "https://github.com/broxus/tycho.git", rev = "c8805e86e4f787744ef08705797cebc9ce840afe" }
+tycho-util = { git = "https://github.com/broxus/tycho.git", rev = "c8805e86e4f787744ef08705797cebc9ce840afe" }
 
 [build-dependencies]
 anyhow = "1.0"

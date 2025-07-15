@@ -112,6 +112,25 @@ impl SqliteDispatcher {
 
         unreachable!("receiver thread cannot be dropped while `self.tx` is still alive");
     }
+
+    pub fn dispatch_blocking<F, R>(&self, f: F) -> R
+    where
+        F: FnOnce(&mut Connection) -> R + Send + 'static,
+        R: Send + Sync + 'static,
+    {
+        let (tx, rx) = oneshot::channel();
+        let query = Box::new(move |conn: &mut Connection| {
+            tx.send(f(conn)).ok();
+        });
+
+        if self.tx.blocking_send(query).is_ok() {
+            if let Ok(res) = rx.blocking_recv() {
+                return res;
+            }
+        }
+
+        unreachable!("receiver thread cannot be dropped while `self.tx` is still alive");
+    }
 }
 
 type QueryTx = mpsc::Sender<Query>;

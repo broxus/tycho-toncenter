@@ -1,4 +1,4 @@
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 
 use anyhow::{Context, Result};
 use futures_util::future::BoxFuture;
@@ -14,12 +14,12 @@ use tycho_types::models::{
     ShardAccount, ShardIdent, StateInit, StdAddr,
 };
 use tycho_util::{FastDashMap, FastDashSet, FastHashMap};
-use tycho_vm::UnpackedConfig;
 
 use self::interface::{InterfaceType, JettonMasterInterface, JettonWalletInterface};
-use self::models::KnownInterface;
+use self::models::{JettonMaster, JettonWallet, KnownInterface};
 use self::parser::{GetJettonDataOutput, GetWalletDataOutput, RunGetterParams, SimpleExecutor};
 pub use self::repo::TokensRepo;
+use self::repo::TokensRepoTransaction;
 
 pub mod interface;
 pub mod models;
@@ -100,8 +100,7 @@ impl TonCenterRpcState {
         let context = tokio::task::spawn_blocking(move || {
             let context = InitialSyncContext {
                 known_interfaces,
-                skip_interfaces: Default::default(),
-                new_interfaces: Default::default(),
+                skip_code: Default::default(),
                 shared,
                 executor,
             };
@@ -132,19 +131,6 @@ impl TonCenterRpcState {
             context
         })
         .await?;
-
-        // Save new interfaces an fill up the cache.
-        let new_interfaces = context
-            .new_interfaces
-            .into_iter()
-            .map(|(_, value)| value)
-            .collect::<Vec<_>>();
-
-        let updated_rows = tokens
-            .insert_known_interfaces(new_interfaces)
-            .await
-            .context("failed to save new interfaces")?;
-        tracing::info!(updated_rows, "saved new known interfaces");
 
         // TODO: Optimize.
         for (code_hash, interface) in context.known_interfaces.into_iter() {
@@ -256,10 +242,16 @@ impl BlockSubscriber for TonCenterRpcState {
 
 struct InitialSyncContext {
     known_interfaces: FastDashMap<HashBytes, InterfaceType>,
-    skip_interfaces: FastDashSet<HashBytes>,
-    new_interfaces: FastDashMap<HashBytes, KnownInterface>,
+    skip_code: FastDashSet<HashBytes>,
     shared: Arc<Inner>,
     executor: SimpleExecutor,
+}
+
+#[derive(Default)]
+struct BatchResult {
+    new_interfaces: FastHashMap<HashBytes, KnownInterface>,
+    jetton_masters: Vec<JettonMaster>,
+    jetton_wallets: Vec<JettonWallet>,
 }
 
 impl InitialSyncContext {
@@ -267,6 +259,8 @@ impl InitialSyncContext {
         let Ok::<i8, _>(workchain) = shard_ident.workchain().try_into() else {
             anyhow::bail!("non-standard workchains are not supported");
         };
+
+        let mut batch = BatchResult::default();
 
         let mut total_accounts = 0usize;
         let mut total_known_interfaces = 0usize;
@@ -280,8 +274,8 @@ impl InitialSyncContext {
             total_accounts += 1;
 
             let address = StdAddr::new(workchain, hash);
-            match self.handle_account(&address, account) {
-                Ok(_) => {}
+            match self.handle_account(&address, account, &mut batch) {
+                Ok(known) => total_known_interfaces += known as usize,
                 Err(_) => total_errors += 1,
             }
         }
@@ -293,12 +287,32 @@ impl InitialSyncContext {
             total_errors,
             "processed virtual shard",
         );
+
+        // TODO: Wait somewhere else?
+        let tx = TokensRepoTransaction::default();
+        tx.insert_known_interfaces(batch.new_interfaces.into_values().collect());
+        tx.insert_jetton_masters(batch.jetton_masters);
+        tx.insert_jetton_wallets(batch.jetton_wallets);
+        let affected_rows = self
+            .shared
+            .tokens
+            .write_blocking(tx)
+            .context("failed to write tokens info batch")?;
+        tracing::info!(affected_rows, "inserted tokens info batch");
+
         Ok(())
     }
 
-    fn handle_account(&self, address: &StdAddr, mut account: Account) -> Result<bool> {
+    fn handle_account(
+        &self,
+        address: &StdAddr,
+        mut account: Account,
+        batch: &mut BatchResult,
+    ) -> Result<bool> {
         let AccountState::Active(StateInit {
-            code: Some(code), ..
+            code: Some(code),
+            data,
+            ..
         }) = &mut account.state
         else {
             return Ok(false);
@@ -309,48 +323,99 @@ impl InitialSyncContext {
         }
 
         let code_hash = *code.repr_hash();
+        let data_hash = data.as_ref().map(|x| *x.repr_hash()).unwrap_or_default();
 
         let known_interface = self.known_interfaces.get(&code_hash).map(|item| *item);
-
         let known_interface = if let Some(interface) = known_interface {
             interface
-        } else if self.skip_interfaces.contains(&code_hash) {
+        } else if self.skip_code.contains(&code_hash) {
             return Ok(false);
         } else if let Some(interface) = InterfaceType::detect(code.as_ref()) {
             interface
         } else {
-            self.skip_interfaces.insert(code_hash);
+            self.skip_code.insert(code_hash);
             return Ok(false);
         };
 
         account.address = address.clone().into();
 
-        match known_interface {
+        let res = match known_interface {
             InterfaceType::JettonMaster => {
-                let Ok(_output) = self.executor.run_getter::<GetJettonDataOutput>(
-                    account,
-                    RunGetterParams::new(JettonMasterInterface::get_jetton_data()),
-                ) else {
-                    return Ok(false);
-                };
-
-                self.known_interfaces
-                    .insert(code_hash, InterfaceType::JettonMaster);
+                self.handle_jetton_master(address, &code_hash, &data_hash, account, batch)
             }
             InterfaceType::JettonWallet => {
-                let Ok(_output) = self.executor.run_getter::<GetWalletDataOutput>(
-                    account,
-                    RunGetterParams::new(JettonWalletInterface::get_wallet_data()),
-                ) else {
-                    return Ok(false);
-                };
-
-                self.known_interfaces
-                    .insert(code_hash, InterfaceType::JettonWallet);
+                self.handle_jetton_wallet(address, &code_hash, &data_hash, account, batch)
             }
-        }
+        };
 
+        if res.is_ok() {
+            self.known_interfaces.insert(code_hash, known_interface);
+            batch.new_interfaces.insert(code_hash, KnownInterface {
+                code_hash,
+                interface: known_interface as u8,
+                is_broken: false,
+            });
+        } else {
+            self.skip_code.insert(code_hash);
+        }
         Ok(true)
+    }
+
+    fn handle_jetton_master(
+        &self,
+        address: &StdAddr,
+        code_hash: &HashBytes,
+        data_hash: &HashBytes,
+        account: Account,
+        batch: &mut BatchResult,
+    ) -> Result<()> {
+        let last_transaction_lt = account.last_trans_lt;
+        let output = self.executor.run_getter::<GetJettonDataOutput>(
+            account,
+            RunGetterParams::new(JettonMasterInterface::get_jetton_data()),
+        )?;
+
+        batch.jetton_masters.push(JettonMaster {
+            address: address.clone(),
+            total_supply: output.total_supply,
+            mintable: output.mintable,
+            admin_address: output.admin_address,
+            // TODO: Extract jetton content
+            jetton_content: None,
+            wallet_code_hash: *output.jetton_wallet_code.repr_hash(),
+            last_transaction_lt,
+            code_hash: *code_hash,
+            data_hash: *data_hash,
+        });
+
+        Ok(())
+    }
+
+    fn handle_jetton_wallet(
+        &self,
+        address: &StdAddr,
+        code_hash: &HashBytes,
+        data_hash: &HashBytes,
+        account: Account,
+        batch: &mut BatchResult,
+    ) -> Result<()> {
+        let last_transaction_lt = account.last_trans_lt;
+        let output = self.executor.run_getter::<GetWalletDataOutput>(
+            account,
+            RunGetterParams::new(JettonWalletInterface::get_wallet_data()),
+        )?;
+
+        batch.jetton_wallets.push(JettonWallet {
+            address: address.clone(),
+            balance: output.balance,
+            owner: output.owner,
+            jetton: output.jetton,
+            last_transaction_lt,
+            code_hash: Some(*code_hash),
+            data_hash: Some(*data_hash),
+        });
+
+        Ok(())
     }
 }
 
