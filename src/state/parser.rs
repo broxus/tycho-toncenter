@@ -146,7 +146,7 @@ impl SimpleExecutor {
             }
         }
 
-        R::from_stack(stack).map_err(ExecutorError::FailedToParse)
+        R::from_stack(SafeRc::unwrap_or_clone(stack)).map_err(ExecutorError::FailedToParse)
     }
 
     // TODO: Use in toncenter V2 API.
@@ -213,7 +213,7 @@ impl SimpleExecutor {
 
         Ok(VmOutput {
             exit_code,
-            stack: SafeRc::unwrap_or_clone(stack),
+            stack,
             gas_used,
         })
     }
@@ -236,13 +236,14 @@ impl RunGetterParams {
         }
     }
 
-    #[allow(unused)]
-    pub fn with_args<I: IntoIterator<Item = RcStackValue>>(mut self, args: I) -> Self {
-        self.args = args.into_iter().collect();
+    pub fn with_args<I: IntoIterator<Item = RcStackValue> + 'static>(mut self, args: I) -> Self {
+        self.args = match castaway::cast!(args, Vec<RcStackValue>) {
+            Ok(args) => args,
+            Err(args) => args.into_iter().collect(),
+        };
         self
     }
 
-    #[allow(unused)]
     pub fn with_gas_limit(mut self, limit: u64) -> Self {
         self.gas_limit = limit;
         self
@@ -301,9 +302,10 @@ pub trait FromStack: Sized {
     fn field_count_hint() -> Option<usize>;
 }
 
+#[derive(Clone)]
 pub struct VmOutput {
     pub exit_code: i32,
-    pub stack: Stack,
+    pub stack: SafeRc<Stack>,
     pub gas_used: u64,
 }
 

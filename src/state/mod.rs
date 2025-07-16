@@ -23,10 +23,10 @@ use self::repo::TokensRepoTransaction;
 
 pub mod interface;
 pub mod models;
+pub mod parser;
 pub mod util;
 
 mod db;
-mod parser;
 mod repo;
 
 const SUBDIR: &str = "toncenter";

@@ -13,8 +13,8 @@ axum = "0.8"
 base64 = "0.22.0"
 bb8 = "0.9"
 bytes = "1.0"
+castaway = "0.2.4"
 clap = { version = "4.5", features = ["derive"] }
-tycho-types = { version = "0.2.0", features = ["sync", "base64", "rayon", "models", "rand9"] }
 futures-util = "0.3"
 humantime = "2.2"
 num-bigint = "0.4"
@@ -29,6 +29,7 @@ thiserror = "2.0"
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "sync", "time"] }
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+tycho-types = { version = "0.2.0", features = ["sync", "base64", "rayon", "models", "rand9"] }
 
 tikv-jemallocator = { version = "0.6.0", features = [
     "unprefixed_malloc_on_supported_platforms",

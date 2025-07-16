@@ -11,7 +11,6 @@ use axum::response::{IntoResponse, Response};
 use axum::routing::{get, post};
 use axum::{Json, RequestExt};
 use futures_util::future::Either;
-use num_bigint::BigInt;
 use serde::Serialize;
 use tokio::sync::OwnedSemaphorePermit;
 use tycho_block_util::message::{
@@ -34,6 +33,7 @@ use tycho_util::sync::rayon_run;
 
 use self::models::*;
 use crate::state::TonCenterRpcState;
+use crate::state::parser::{ExecutorError, RunGetterParams, SimpleExecutor, VmOutput};
 use crate::util::tonlib_helpers::{StackParser, compute_method_id};
 
 pub mod models;
@@ -1174,87 +1174,41 @@ fn run_getter(
     account_state: &ShardAccount,
     timings: GenTimings,
     method_id: i64,
-    mut stack: Vec<tycho_vm::RcStackValue>,
+    stack: Vec<tycho_vm::RcStackValue>,
     gas_limit: u64,
-) -> Result<GetterOutput, tycho_types::error::Error> {
-    // Prepare stack.
-    stack.push(tycho_vm::RcStackValue::new_dyn_value(BigInt::from(
-        method_id,
-    )));
-    let stack = tycho_vm::Stack::with_items(stack);
-
-    // Parse account state.
-    let mut balance = CurrencyCollection::ZERO;
-    let mut code = None::<Cell>;
-    let mut data = None::<Cell>;
-    let mut account_libs = Dict::new();
-    let mut state_libs = Dict::new();
-    let mut address = StdAddr::new(0, HashBytes::ZERO);
-    if let Some(account) = account_state.load_account()? {
-        if let IntAddr::Std(addr) = account.address {
-            address = addr;
-        }
-
-        balance = account.balance;
-
-        if let AccountState::Active(state_init) = account.state {
-            code = state_init.code;
-            data = state_init.data;
-            account_libs = state_init.libraries;
-            state_libs = state.get_libraries();
-        }
+) -> Result<VmOutput, tycho_types::error::Error> {
+    thread_local! {
+        static NO_CODE: VmOutput = VmOutput {
+            exit_code: -14,
+            gas_used: 0,
+            stack: Default::default(),
+        };
     }
 
-    // Prepare VM state.
+    let Some(account) = account_state.load_account()? else {
+        return Ok(NO_CODE.with(Clone::clone));
+    };
+
     let config = state.get_unpacked_blockchain_config();
 
-    let smc_info = tycho_vm::SmcInfoBase::new()
-        .with_now(timings.gen_utime)
-        .with_block_lt(timings.gen_lt)
-        .with_tx_lt(timings.gen_lt)
-        .with_account_balance(balance)
-        .with_account_addr(address.clone().into())
-        .with_config(config.raw.clone())
-        .require_ton_v4()
-        .with_code(code.clone().unwrap_or_default())
-        .with_message_balance(CurrencyCollection::ZERO)
-        .with_storage_fees(Tokens::ZERO)
-        .require_ton_v6()
-        .with_unpacked_config(config.unpacked.as_tuple())
-        .require_ton_v11();
-
-    let libraries = (account_libs, state_libs);
-    let mut vm = tycho_vm::VmState::builder()
-        .with_smc_info(smc_info)
-        .with_code(code)
-        .with_data(data.unwrap_or_default())
-        .with_libraries(&libraries)
-        .with_init_selector(false)
-        .with_raw_stack(tycho_vm::SafeRc::new(stack))
-        .with_gas(tycho_vm::GasParams {
-            max: gas_limit,
-            limit: gas_limit,
-            ..tycho_vm::GasParams::getter()
-        })
-        .with_modifiers(config.modifiers)
-        .build();
-
-    // Run VM.
-    let exit_code = !vm.run();
-
-    // Done
-    let gas_used = vm.gas.consumed();
-    Ok(GetterOutput {
-        exit_code,
-        gas_used,
-        stack: vm.stack,
+    SimpleExecutor {
+        libraries: state.get_libraries(),
+        raw_config: config.raw.clone(),
+        unpacked_config: config.unpacked.clone(),
+        timings,
+        modifiers: config.modifiers,
+    }
+    .run_getter_raw(
+        account,
+        RunGetterParams::new(method_id)
+            .with_args(stack)
+            .with_gas_limit(gas_limit),
+    )
+    .or_else(|e| match e {
+        ExecutorError::AccountNotActive => Ok(NO_CODE.with(Clone::clone)),
+        ExecutorError::StateAccess(e) => Err(e),
+        ExecutorError::FailedToParse(_) => Err(tycho_types::error::Error::InvalidData),
     })
-}
-
-struct GetterOutput {
-    pub exit_code: i32,
-    pub gas_used: u64,
-    pub stack: tycho_vm::SafeRc<tycho_vm::Stack>,
 }
 
 #[cfg(test)]
