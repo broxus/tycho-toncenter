@@ -1,4 +1,10 @@
 --
+CREATE TABLE IF NOT EXISTS node_state (
+    param   INTEGER NOT NULL PRIMARY KEY,
+    value   BLOB
+) WITHOUT ROWID;
+
+--
 CREATE TABLE IF NOT EXISTS known_interfaces (
     code_hash   BLOB NOT NULL PRIMARY KEY,
     interface   INTEGER NOT NULL,

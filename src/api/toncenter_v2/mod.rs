@@ -33,8 +33,9 @@ use tycho_util::sync::rayon_run;
 
 use self::models::*;
 use crate::state::TonCenterRpcState;
-use crate::state::parser::{ExecutorError, RunGetterParams, SimpleExecutor, VmOutput};
-use crate::util::tonlib_helpers::{StackParser, compute_method_id};
+use crate::util::tonlib_helpers::{
+    ExecutorError, RunGetterParams, SimpleExecutor, StackParser, VmOutput, compute_method_id,
+};
 
 pub mod models;
 
@@ -1177,16 +1178,8 @@ fn run_getter(
     stack: Vec<tycho_vm::RcStackValue>,
     gas_limit: u64,
 ) -> Result<VmOutput, tycho_types::error::Error> {
-    thread_local! {
-        static NO_CODE: VmOutput = VmOutput {
-            exit_code: -14,
-            gas_used: 0,
-            stack: Default::default(),
-        };
-    }
-
     let Some(account) = account_state.load_account()? else {
-        return Ok(NO_CODE.with(Clone::clone));
+        return Ok(VmOutput::no_code());
     };
 
     let config = state.get_unpacked_blockchain_config();
@@ -1205,7 +1198,7 @@ fn run_getter(
             .with_gas_limit(gas_limit),
     )
     .or_else(|e| match e {
-        ExecutorError::AccountNotActive => Ok(NO_CODE.with(Clone::clone)),
+        ExecutorError::AccountNotActive => Ok(VmOutput::no_code()),
         ExecutorError::StateAccess(e) => Err(e),
         ExecutorError::FailedToParse(_) => Err(tycho_types::error::Error::InvalidData),
     })

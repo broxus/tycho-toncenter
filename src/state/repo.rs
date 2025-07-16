@@ -6,6 +6,7 @@ use std::time::Instant;
 use anyhow::{Context, Result};
 use rusqlite::{Connection, OpenFlags, params_from_iter};
 use tycho_types::cell::HashBytes;
+use tycho_types::models::StdAddr;
 use tycho_util::FastHashMap;
 
 use super::db::*;
@@ -13,6 +14,7 @@ use super::interface::InterfaceType;
 use super::models::*;
 use super::util::*;
 
+#[derive(Clone)]
 pub struct TokensRepo {
     writer: SqliteDispatcher,
     readers: SqlitePool,
@@ -275,8 +277,15 @@ pub struct TokensRepoTransaction {
 }
 
 impl TokensRepoTransaction {
+    pub fn execute<F>(&self, f: F)
+    where
+        F: FnOnce(&rusqlite::Transaction<'_>) -> rusqlite::Result<usize> + Send + 'static,
+    {
+        self.batches.lock().unwrap().push(Box::new(f))
+    }
+
     pub fn insert_known_interfaces(&self, rows: Vec<KnownInterface>) {
-        self.insert_rows_simple(rows, |sql, values| {
+        self.execute_rows_simple(rows, |sql, values| {
             write!(
                 sql,
                 "INSERT INTO known_interfaces (code_hash,interface,is_broken) \
@@ -288,7 +297,7 @@ impl TokensRepoTransaction {
     }
 
     pub fn insert_jetton_masters(&self, rows: Vec<JettonMaster>) {
-        self.insert_rows_simple(rows, |sql, values| {
+        self.execute_rows_simple(rows, |sql, values| {
             write!(
                 sql,
                 "INSERT INTO jetton_masters (address,total_supply,mintable,\
@@ -309,8 +318,17 @@ impl TokensRepoTransaction {
         })
     }
 
+    pub fn remove_jetton_masters(&self, rows: Vec<StdAddr>) {
+        self.execute_rows_simple(rows, |sql, values| {
+            write!(
+                sql,
+                "DELETE FROM jetton_masters WHERE address IN ({values})"
+            )
+        });
+    }
+
     pub fn insert_jetton_wallets(&self, rows: Vec<JettonWallet>) {
-        self.insert_rows_simple(rows, |sql, values| {
+        self.execute_rows_simple(rows, |sql, values| {
             write!(
                 sql,
                 "INSERT INTO jetton_wallets (address,balance,owner,jetton,\
@@ -328,7 +346,16 @@ impl TokensRepoTransaction {
         })
     }
 
-    pub fn insert_rows_simple<T, F>(&self, rows: Vec<T>, mut fmt: F)
+    pub fn remove_jetton_wallets(&self, rows: Vec<StdAddr>) {
+        self.execute_rows_simple(rows, |sql, values| {
+            write!(
+                sql,
+                "DELETE FROM jetton_wallets WHERE address IN ({values})"
+            )
+        });
+    }
+
+    pub fn execute_rows_simple<T, F>(&self, rows: Vec<T>, mut fmt: F)
     where
         T: SqlColumnsRepr + KnownColumnCount + Send + 'static,
         F: FnMut(&mut String, &str) -> std::fmt::Result + Send + 'static,
@@ -358,12 +385,12 @@ impl TokensRepoTransaction {
             "prepared param list"
         );
 
-        let f: Box<TokensRepoTransactionFn> = Box::new(move |tx| {
+        self.execute(move |tx| {
             let mut rows = rows.iter();
             let mut execute = |n: usize, values: &str| {
                 let mut stmt = QueryBuffer::with(|sql| {
                     fmt(sql, values).unwrap();
-                    tracing::warn!(n, "add batch");
+                    tracing::trace!(sql);
                     tx.prepare(sql)
                 })?;
                 stmt.execute(params_from_iter(
@@ -383,8 +410,6 @@ impl TokensRepoTransaction {
             assert!(rows.next().is_none());
             Ok(affected_rows)
         });
-
-        self.batches.lock().unwrap().push(f);
     }
 }
 
@@ -455,7 +480,6 @@ mod tests {
     }
 
     #[tokio::test]
-
     async fn token_masters_query_works() -> Result<()> {
         tycho_util::test::init_logger("token_masters_query_works", "trace");
 
@@ -512,6 +536,23 @@ mod tests {
                 .await?;
             assert_eq!(result, to_insert);
         }
+
+        let changed = repo
+            .with_transaction(|tx| {
+                tx.remove_jetton_masters([0x11, 0x22, 0x33].map(dumb_addr).into_iter().collect())
+            })
+            .await?;
+        assert_eq!(changed, 3);
+
+        let result = repo
+            .get_jetton_masters(GetJettonMastersParams {
+                master_addresses: None,
+                admin_addresses: None,
+                limit: NonZeroUsize::new(10).unwrap(),
+                offset: 0,
+            })
+            .await?;
+        assert_eq!(result, &to_insert[3..]);
 
         Ok(())
     }
@@ -604,6 +645,27 @@ mod tests {
             })
             .await?;
         assert_eq!(result, to_insert);
+
+        let changed = repo
+            .with_transaction(|tx| {
+                tx.remove_jetton_wallets([0x11, 0x22, 0x33].map(dumb_addr).into_iter().collect())
+            })
+            .await?;
+        assert_eq!(changed, 3);
+
+        to_insert.reverse();
+        let result = repo
+            .get_jetton_wallets(GetJettonWalletsParams {
+                wallet_addresses: None,
+                owner_addresses: None,
+                jetton_addresses: None,
+                limit: NonZeroUsize::new(10).unwrap(),
+                offset: 0,
+                exclude_zero_balance: true,
+                order_by: None,
+            })
+            .await?;
+        assert_eq!(result, &to_insert[3..]);
 
         Ok(())
     }

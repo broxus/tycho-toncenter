@@ -1,9 +1,12 @@
+use anyhow::Result;
 use once_cell::race::OnceBox;
 use tycho_types::dict::RawKeys;
+use tycho_types::models::StdAddr;
 use tycho_types::prelude::*;
 use tycho_util::FastHashSet;
+use tycho_vm::Stack;
 
-use crate::util::tonlib_helpers::compute_method_id;
+use crate::util::tonlib_helpers::{FromStack, StackParser, compute_method_id};
 
 // TODO: Generate with macros?
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -130,10 +133,90 @@ fn parse_contract_getters(
     Ok(())
 }
 
+// === Getter outputs ===
+
+#[derive(Debug)]
+pub struct GetJettonDataOutput {
+    pub total_supply: num_bigint::BigUint,
+    pub mintable: bool,
+    pub admin_address: Option<StdAddr>,
+    pub jetton_content: Cell,
+    pub jetton_wallet_code: Cell,
+}
+
+impl FromStack for GetJettonDataOutput {
+    fn from_stack(stack: Stack) -> Result<Self> {
+        let mut parser = StackParser::begin_from_bottom(stack);
+        Ok(Self {
+            total_supply: parser.pop_uint()?,
+            mintable: parser.pop_bool()?,
+            admin_address: parser.pop_address_or_none()?,
+            jetton_content: parser.pop_cell()?,
+            jetton_wallet_code: parser.pop_cell()?,
+        })
+    }
+
+    fn field_count_hint() -> Option<usize> {
+        Some(5)
+    }
+}
+
+#[derive(Debug)]
+pub struct GetWalletAddressOutput {
+    pub address: StdAddr,
+}
+
+impl FromStack for GetWalletAddressOutput {
+    fn from_stack(stack: Stack) -> Result<Self> {
+        let mut parser = StackParser::begin_from_bottom(stack);
+        Ok(Self {
+            address: parser.pop_address()?,
+        })
+    }
+
+    fn field_count_hint() -> Option<usize> {
+        Some(1)
+    }
+}
+
+#[derive(Debug)]
+pub struct GetWalletDataOutput {
+    pub balance: num_bigint::BigUint,
+    pub owner: StdAddr,
+    pub jetton: StdAddr,
+}
+
+impl FromStack for GetWalletDataOutput {
+    fn from_stack(stack: Stack) -> Result<Self> {
+        let mut parser = StackParser::begin_from_bottom(stack);
+        let res = Self {
+            balance: parser.pop_uint()?,
+            owner: parser.pop_address()?,
+            jetton: parser.pop_address()?,
+        };
+        parser.pop_cell()?;
+        Ok(res)
+    }
+
+    fn field_count_hint() -> Option<usize> {
+        Some(4)
+    }
+}
+
 #[cfg(test)]
 mod test {
+    use tycho_rpc::GenTimings;
+    use tycho_types::models::{
+        Account, AccountState, BlockchainConfig, BlockchainConfigParams, CurrencyCollection,
+        StateInit,
+    };
+    use tycho_vm::{OwnedCellSlice, tuple};
+
     use super::*;
-    use crate::util::tonlib_helpers::compute_method_id;
+    use crate::util::tonlib_helpers::{RunGetterParams, SimpleExecutor, compute_method_id};
+
+    const STUB_ADDR: StdAddr = StdAddr::new(0, HashBytes::ZERO);
+    const STUB_BALANCE: CurrencyCollection = CurrencyCollection::new(1_000_000_000);
 
     #[test]
     fn parses_jetton_master() {
@@ -165,5 +248,81 @@ mod test {
             InterfaceType::detect(code.as_ref()),
             Some(InterfaceType::JettonWallet)
         );
+    }
+
+    fn stub_account(code: Cell, data: Cell) -> Account {
+        Account {
+            address: STUB_ADDR.into(),
+            storage_stat: Default::default(),
+            last_trans_lt: 0,
+            balance: STUB_BALANCE,
+            state: AccountState::Active(StateInit {
+                code: Some(code),
+                data: Some(data),
+                ..Default::default()
+            }),
+        }
+    }
+
+    fn default_config() -> BlockchainConfigParams {
+        let mut config: BlockchainConfig =
+            BocRepr::decode(include_bytes!("./test/config.boc")).unwrap();
+        config.params.set_global_id(100).unwrap();
+        config.params
+    }
+
+    #[test]
+    fn jetton_master_getter_works() -> Result<()> {
+        let code = Boc::decode(include_bytes!("./test/jetton_master_code.boc"))?;
+        let data = Boc::decode_base64(
+            "te6cckECFQEAA6oAAgtcugyJMBgBAgAyAAAAAdrBf5WNLuUjoiBiBplFl8E9gx7HBgEU/wD0pBP0vPLICwMCAWIEBQICywYHABug9gXaiaH0AfSB9IGpowIBzggJAgFYDA0C9wgxwCSXwTgAdDTAwFxsJUTXwPwHeD6QPpAMfoAMXHXIfoAMfoAMHOptAAC0x8B2zxbMjQ0NCSCEA+KfqW6mjBsIjZeMRAj8BrgJIIQF41FGbqbMGwiXjIQJEMA8BvgN1s2ghBZXwe8up8CcbDy0sBQI7ry4sYB8BzgXwWAKCwARPpEMMAA8uFNgAFyAT/gzIG6VMICx+DPeIG7y0prQ0wcx0//T//QE0wfUMND6APoA+gD6APoA+gAwAAiED/LwAgFYDg8CAUgTFAH3AXTPwEB+gD6QCHwAe1E0PoA+kD6QNTRUTahUizHBfLiwSrC//LiwlQ0QnBUIBNUFAPIUAT6AljPFgHPFszJIsjLARL0APQAywDJIHAB+QB0yMsCEsoHy//J0AT6QPQEMfoAINdJwgDy4sTIgBgBywVQB88WcPoCdwHLa4BAC8ztRND6APpA+kDU0QrTPwEB+gBRUaAF+kD6QFNdxwVUc29wVCATVBQDyFAE+gJYzxYBzxbMySLIywES9AD0AMsAyXAB+QB0yMsCEsoHy//J0FAPxwUesfLiwwz6AFHKoSm2CBmhUAegGKEmkmxV4w0l1wsBwwAhwgCwgERIAqhPMyIIQF41FGVgKAssfyz9QB/oCIs8WUAbPFiX6AlADzxbJUAXMI5FykXHiUAeoE6AIqgBQBKAXoBS88uLFAcmAQPsAQwDIUAT6AljPFgHPFszJ7VQAclJpoBihyIIQc2LQnCkCyx/LP1AH+gJQBM8WUAfPFsnIgBABywUnzxZQBPoCcQHLahPMyXH7AFBCEwB0jiPIgBABywVQBs8WUAX6AnABy2qCENUydttYBQLLH8s/yXL7AJJbM+JAA8hQBPoCWM8WAc8WzMntVADrO1E0PoA+kD6QNTRBdM/AQH6ACHCAPLiwvpA9AQB0NOf0QHRUWKhUljHBfLiwSbC//LiwsiCEHvdl95YBALLH8s/AfoCI88WAc8WE8ufyciAGAHLBSPPFnD6AnEBy2rMyYBA+wBAE8hQBPoCWM8WAc8WzMntVIACHIAg1yHtRND6APpA+kDU0QTTHwGEDyGCEBeNRRm6AoIQe92X3roSsfL00z8BMPoAMBOgUCPIUAT6AljPFgHPFszJ7VSBn+5gZ",
+        )?;
+
+        let executor = SimpleExecutor::new(default_config(), Dict::new(), GenTimings {
+            gen_lt: 1_000_000,
+            gen_utime: 1000,
+        })?;
+
+        let account = stub_account(code, data);
+
+        let output = executor.run_getter::<GetJettonDataOutput>(
+            account.clone(),
+            RunGetterParams::new("get_jetton_data"),
+        )?;
+        println!("{output:#?}");
+
+        let arg = OwnedCellSlice::new_allow_exotic(CellBuilder::build_from(STUB_ADDR).unwrap());
+        let output = executor
+            .run_getter::<GetWalletAddressOutput>(
+                account,
+                RunGetterParams::new("get_wallet_address").with_args(tuple![
+                    slice arg,
+                ]),
+            )
+            .unwrap();
+        println!("{output:#?}");
+
+        Ok(())
+    }
+
+    #[test]
+    fn jetton_wallet_getter_works() -> Result<()> {
+        let code = Boc::decode(include_bytes!("./test/jetton_wallet_code.boc"))?;
+        let data = Boc::decode_base64(
+            "te6ccgECFAEAA9EAAZFQTAW7AjgB8zYowBXIml4lYvHRjdV68RJV0Fi8i20THzvW/WQH84kAHKcE7bfLAfL8KBqtj00r0VPPTIOwbzY+1xtJNCAahfCgAQEU/wD0pBP0vPLICwICAWIDBAICywUGABug9gXaiaH0AfSB9IGpowIBzgcIAgFYCwwC9wgxwCSXwTgAdDTAwFxsJUTXwPwHeD6QPpAMfoAMXHXIfoAMfoAMHOptAAC0x8B2zxbMjQ0NCSCEA+KfqW6mjBsIjZeMRAj8BrgJIIQF41FGbqbMGwiXjIQJEMA8BvgN1s2ghBZXwe8up8CcbDy0sBQI7ry4sYB8BzgXwWAJCgARPpEMMAA8uFNgAFyAT/gzIG6VMICx+DPeIG7y0prQ0wcx0//T//QE0wfUMND6APoA+gD6APoA+gAwAAiED/LwAgFYDQ4CAUgSEwH3AXTPwEB+gD6QCHwAe1E0PoA+kD6QNTRUTahUizHBfLiwSrC//LiwlQ0QnBUIBNUFAPIUAT6AljPFgHPFszJIsjLARL0APQAywDJIHAB+QB0yMsCEsoHy//J0AT6QPQEMfoAINdJwgDy4sTIgBgBywVQB88WcPoCdwHLa4A8C8ztRND6APpA+kDU0QrTPwEB+gBRUaAF+kD6QFNdxwVUc29wVCATVBQDyFAE+gJYzxYBzxbMySLIywES9AD0AMsAyXAB+QB0yMsCEsoHy//J0FAPxwUesfLiwwz6AFHKoSm2CBmhUAegGKEmkmxV4w0l1wsBwwAhwgCwgEBEAqhPMyIIQF41FGVgKAssfyz9QB/oCIs8WUAbPFiX6AlADzxbJUAXMI5FykXHiUAeoE6AIqgBQBKAXoBS88uLFAcmAQPsAQwDIUAT6AljPFgHPFszJ7VQAclJpoBihyIIQc2LQnCkCyx/LP1AH+gJQBM8WUAfPFsnIgBABywUnzxZQBPoCcQHLahPMyXH7AFBCEwB0jiPIgBABywVQBs8WUAX6AnABy2qCENUydttYBQLLH8s/yXL7AJJbM+JAA8hQBPoCWM8WAc8WzMntVADrO1E0PoA+kD6QNTRBdM/AQH6ACHCAPLiwvpA9AQB0NOf0QHRUWKhUljHBfLiwSbC//LiwsiCEHvdl95YBALLH8s/AfoCI88WAc8WE8ufyciAGAHLBSPPFnD6AnEBy2rMyYBA+wBAE8hQBPoCWM8WAc8WzMntVIACHIAg1yHtRND6APpA+kDU0QTTHwGEDyGCEBeNRRm6AoIQe92X3roSsfL00z8BMPoAMBOgUCPIUAT6AljPFgHPFszJ7VSA=",
+        )?;
+
+        let executor = SimpleExecutor::new(default_config(), Dict::new(), GenTimings {
+            gen_lt: 1_000_000,
+            gen_utime: 1000,
+        })?;
+
+        let account = stub_account(code, data);
+
+        let output = executor
+            .run_getter::<GetWalletDataOutput>(account, RunGetterParams::new("get_wallet_data"))?;
+        println!("{output:#?}");
+
+        Ok(())
     }
 }

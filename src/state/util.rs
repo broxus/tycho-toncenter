@@ -6,7 +6,7 @@ use once_cell::race::OnceBox;
 use rusqlite::types::{FromSql, FromSqlError, ToSqlOutput, Value, ValueRef};
 use rusqlite::{Row, RowIndex, ToSql};
 use tycho_types::cell::HashBytes;
-use tycho_types::models::StdAddr;
+use tycho_types::models::{BlockId, ShardIdent, StdAddr};
 
 macro_rules! row {
     (
@@ -47,7 +47,6 @@ macro_rules! row {
             }
         }
 
-
         impl $crate::state::util::SqlColumnsRepr for $ident {
             type Iter<'a> = [&'a dyn ::rusqlite::ToSql; Self::COLUMN_COUNT]
             where
@@ -57,7 +56,6 @@ macro_rules! row {
                 [$($crate::state::util::SqlType::wrap(&self.$field) as &dyn ::rusqlite::ToSql),*]
             }
         }
-
     };
 
     (@fields $row:ident { $($fields:tt)* } { $idx:expr }) => {
@@ -184,9 +182,13 @@ pub fn tuple_list(tuple_count: usize, tuple_size: usize) -> String {
         }
     }
 
-    let mut result = format!("({}),", Tuple(tuple_size)).repeat(tuple_count);
-    result.pop();
-    result
+    if tuple_size == 1 {
+        param_list(tuple_count).to_owned()
+    } else {
+        let mut result = format!("({}),", Tuple(tuple_size)).repeat(tuple_count);
+        result.pop();
+        result
+    }
 }
 
 pub fn param_list(param_count: usize) -> &'static str {
@@ -224,6 +226,62 @@ pub trait KnownColumnCount {
     }
 
     fn batch_params_string() -> &'static str;
+}
+
+macro_rules! tuple_row {
+    ($field_count:literal, $params:literal, $($t:ident: $n:tt),+$(,)?) => {
+        impl<$($t),+> $crate::state::util::KnownColumnCount for ($($t,)+) {
+            const COLUMN_COUNT: usize = $field_count;
+
+            fn batch_params_string() -> &'static str {
+                static STR: ::once_cell::race::OnceBox<String> = ::once_cell::race::OnceBox::new();
+                STR.get_or_init(|| {
+                    Box::new($crate::state::util::tuple_list(Self::max_rows_per_batch(), Self::COLUMN_COUNT))
+                })
+            }
+        }
+
+        impl<$($t),+> $crate::state::util::SqlColumnsRepr for ($($t,)+)
+        where
+            $($t: $crate::state::util::SqlTypeRepr,)+
+        {
+            type Iter<'a> = [&'a dyn ::rusqlite::ToSql; $field_count]
+            where
+                Self: 'a;
+
+            fn as_columns_iter(&self) -> Self::Iter<'_> {
+                [$($crate::state::util::SqlType::wrap(&self.$n) as &dyn ::rusqlite::ToSql),*]
+            }
+        }
+    };
+}
+
+tuple_row!(1, "?", T0: 0);
+tuple_row!(2, "?,?", T0: 0, T1: 1);
+tuple_row!(3, "?,?,?", T0: 0, T1: 1, T2: 2);
+tuple_row!(4, "?,?,?,?", T0: 0, T1: 1, T2: 2, T3: 3);
+tuple_row!(5, "?,?,?,?,?", T0: 0, T1: 1, T2: 2, T3: 3, T4: 4);
+tuple_row!(6, "?,?,?,?,?,?", T0: 0, T1: 1, T2: 2, T3: 3, T4: 4, T5: 5);
+tuple_row!(7, "?,?,?,?,?,?,?", T0: 0, T1: 1, T2: 2, T3: 3, T4: 4, T5: 5, T6: 6);
+
+impl SqlColumnsRepr for StdAddr {
+    type Iter<'a>
+        = [&'a dyn ::rusqlite::ToSql; 1]
+    where
+        Self: 'a;
+
+    #[inline]
+    fn as_columns_iter(&self) -> Self::Iter<'_> {
+        [SqlType::wrap(self) as &dyn ::rusqlite::ToSql]
+    }
+}
+
+impl KnownColumnCount for StdAddr {
+    const COLUMN_COUNT: usize = 1;
+
+    fn batch_params_string() -> &'static str {
+        param_list(Self::max_rows_per_batch())
+    }
 }
 
 // === SQL Type wrapper ===
@@ -318,6 +376,42 @@ impl SqlTypeRepr for StdAddr {
     }
 }
 
+impl SqlTypeRepr for BlockId {
+    #[inline]
+    fn to_sql_impl(&self) -> rusqlite::Result<ToSqlOutput<'_>> {
+        let mut bytes = [0u8; BLOCK_ID_BYTES];
+        bytes[0..4].copy_from_slice(&self.shard.workchain().to_be_bytes());
+        bytes[4..12].copy_from_slice(&self.shard.prefix().to_be_bytes());
+        bytes[12..16].copy_from_slice(&self.seqno.to_be_bytes());
+        bytes[16..48].copy_from_slice(self.root_hash.as_array());
+        bytes[48..80].copy_from_slice(self.file_hash.as_array());
+        Ok(ToSqlOutput::Owned(Value::Blob(bytes.to_vec())))
+    }
+
+    #[inline]
+    fn from_sql_impl(value: ValueRef<'_>) -> Result<Self, FromSqlError> {
+        let blob = value.as_blob()?;
+        let bytes: [u8; BLOCK_ID_BYTES] =
+            blob.try_into().map_err(|_| FromSqlError::InvalidBlobSize {
+                expected_size: BLOCK_ID_BYTES,
+                blob_size: blob.len(),
+            })?;
+
+        let workchain = i32::from_be_bytes(bytes[0..4].try_into().unwrap());
+        let prefix = u64::from_be_bytes(bytes[4..12].try_into().unwrap());
+        let Some(shard) = ShardIdent::new(workchain, prefix) else {
+            return Err(FromSqlError::OutOfRange(prefix as i64));
+        };
+
+        Ok(BlockId {
+            shard,
+            seqno: u32::from_be_bytes(bytes[12..16].try_into().unwrap()),
+            root_hash: HashBytes::from_slice(&bytes[16..48]),
+            file_hash: HashBytes::from_slice(&bytes[48..80]),
+        })
+    }
+}
+
 impl SqlTypeRepr for HashBytes {
     #[inline]
     fn to_sql_impl(&self) -> rusqlite::Result<ToSqlOutput<'_>> {
@@ -377,5 +471,41 @@ impl_existing! {
 }
 
 pub const ADDR_BYTES: usize = 33;
+pub const BLOCK_ID_BYTES: usize = 4 + 8 + 4 + 32 + 32;
 
 pub const SQLITE_MAX_VARIABLE_NUMBER: usize = 32766 / 4;
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn address_sql() {
+        let addr = "0:caab0a342f46d0f32d478a0e90c4ffd61e727ad2b838ea4c2a5825a484960b54"
+            .parse::<StdAddr>()
+            .unwrap();
+
+        let ToSqlOutput::Owned(blob) = addr.to_sql_impl().unwrap() else {
+            unreachable!();
+        };
+
+        let from_sql = StdAddr::from_sql_impl(ValueRef::from(&blob)).unwrap();
+        assert_eq!(addr, from_sql);
+    }
+
+    #[test]
+    fn block_id_sql() {
+        let block_id = "-1:8000000000000000:4148544:\
+            57142cda6e2aed8df9f11f9312e82da7c8c650f5cba0eba9b7f49a350ba9e417:\
+            4ae138982d446d74052a55a07a0511b2f68d628510cb53195243561c23053f1a"
+            .parse::<BlockId>()
+            .unwrap();
+
+        let ToSqlOutput::Owned(blob) = block_id.to_sql_impl().unwrap() else {
+            unreachable!();
+        };
+
+        let from_sql = BlockId::from_sql_impl(ValueRef::from(&blob)).unwrap();
+        assert_eq!(block_id, from_sql);
+    }
+}

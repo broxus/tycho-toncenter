@@ -1,11 +1,60 @@
-use anyhow::Result;
+use anyhow::{Result, anyhow};
 use num_bigint::{BigInt, BigUint};
-use tycho_types::models::StdAddr;
+use tycho_rpc::GenTimings;
+use tycho_types::models::{
+    Account, AccountState, BlockchainConfigParams, CurrencyCollection, IntAddr, LibDescr, StdAddr,
+};
+use tycho_types::num::Tokens;
 use tycho_types::prelude::*;
-use tycho_vm::{OwnedCellSlice, RcStackValue, SafeRc, Stack, StackValueType};
+use tycho_vm::{
+    BehaviourModifiers, GasParams, OwnedCellSlice, RcStackValue, SafeRc, SmcInfoTonV6, Stack,
+    StackValueType, UnpackedConfig,
+};
+
+// === Method ID stuff ===
 
 pub fn compute_method_id(bytes: impl AsRef<[u8]>) -> i64 {
     tycho_types::crc::crc_16(bytes.as_ref()) as i64 | 0x10000
+}
+
+pub trait MethodId {
+    fn compute_id(&self) -> i64;
+}
+
+impl MethodId for i64 {
+    #[inline]
+    fn compute_id(&self) -> i64 {
+        *self
+    }
+}
+
+impl MethodId for u64 {
+    #[inline]
+    fn compute_id(&self) -> i64 {
+        *self as i64
+    }
+}
+
+impl MethodId for &str {
+    #[inline]
+    fn compute_id(&self) -> i64 {
+        compute_method_id(self)
+    }
+}
+
+impl MethodId for String {
+    #[inline]
+    fn compute_id(&self) -> i64 {
+        self.as_str().compute_id()
+    }
+}
+
+// === Stack parser ==
+
+pub trait FromStack: Sized {
+    fn from_stack(stack: Stack) -> Result<Self>;
+
+    fn field_count_hint() -> Option<usize>;
 }
 
 pub struct StackParser {
@@ -98,6 +147,14 @@ impl StackParser {
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum StackParseOrigin {
+    Bottom,
+    Top,
+}
+
+// === Into stack items ===
+
 pub trait IntoStackItems {
     fn into_stack_items(self) -> Vec<RcStackValue>;
 }
@@ -122,12 +179,6 @@ impl IntoStackItems for Vec<RcStackValue> {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum StackParseOrigin {
-    Bottom,
-    Top,
-}
-
 pub fn load_bytes_rope(
     mut cs: CellSlice<'_>,
     strict: bool,
@@ -146,4 +197,211 @@ pub fn load_bytes_rope(
         }
     }
     Ok(result)
+}
+
+// === Simple Executor ===
+
+pub struct SimpleExecutor {
+    pub libraries: Dict<HashBytes, LibDescr>,
+    pub raw_config: BlockchainConfigParams,
+    pub unpacked_config: UnpackedConfig,
+    pub timings: GenTimings,
+    pub modifiers: BehaviourModifiers,
+}
+
+impl SimpleExecutor {
+    pub fn new(
+        config: BlockchainConfigParams,
+        libraries: Dict<HashBytes, LibDescr>,
+        timings: GenTimings,
+    ) -> Result<Self, tycho_types::error::Error> {
+        Ok(Self {
+            libraries,
+            unpacked_config: SmcInfoTonV6::unpack_config_partial(&config, timings.gen_utime)?,
+            raw_config: config,
+            timings,
+            modifiers: Default::default(),
+        })
+    }
+
+    pub fn resolve_library(&self, code: &Cell) -> Result<Cell, tycho_types::error::Error> {
+        debug_assert!(code.descriptor().is_library());
+
+        let mut cs = code.as_slice()?;
+        cs.skip_first(8, 0)?;
+
+        let lib_hash = cs.load_u256()?;
+        let Some(descr) = self.libraries.get(lib_hash)? else {
+            return Err(tycho_types::error::Error::CellUnderflow);
+        };
+
+        Ok(descr.lib)
+    }
+
+    pub fn run_getter<R: FromStack>(
+        &self,
+        account: Account,
+        params: RunGetterParams,
+    ) -> Result<R, ExecutorError> {
+        let VmOutput {
+            exit_code, stack, ..
+        } = self.run_getter_raw(account, params)?;
+
+        // Parse output.
+        if exit_code != 0 {
+            return Err(ExecutorError::FailedToParse(anyhow!(
+                "non-zero result code: {exit_code}"
+            )));
+        }
+
+        if let Some(require_fields) = R::field_count_hint() {
+            if stack.items.len() < require_fields {
+                return Err(ExecutorError::FailedToParse(anyhow!(
+                    "too few stack arguments"
+                )));
+            }
+        }
+
+        R::from_stack(SafeRc::unwrap_or_clone(stack)).map_err(ExecutorError::FailedToParse)
+    }
+
+    // TODO: Use in toncenter V2 API.
+    pub fn run_getter_raw(
+        &self,
+        account: Account,
+        params: RunGetterParams,
+    ) -> Result<VmOutput, ExecutorError> {
+        let IntAddr::Std(address) = account.address else {
+            return Err(ExecutorError::StateAccess(
+                tycho_types::error::Error::InvalidTag,
+            ));
+        };
+        let AccountState::Active(state_init) = account.state else {
+            return Err(ExecutorError::AccountNotActive);
+        };
+
+        let Some(code) = state_init.code else {
+            return Ok(VmOutput::no_code());
+        };
+
+        // Prepare VM state.
+        let (gas, stack) = params.build();
+
+        let smc_info = tycho_vm::SmcInfoBase::new()
+            .with_now(self.timings.gen_utime)
+            .with_block_lt(self.timings.gen_lt)
+            .with_tx_lt(self.timings.gen_lt)
+            .with_account_balance(account.balance)
+            .with_account_addr(address.clone().into())
+            .with_config(self.raw_config.clone())
+            .require_ton_v4()
+            .with_code(code.clone())
+            .with_message_balance(CurrencyCollection::ZERO)
+            .with_storage_fees(Tokens::ZERO)
+            .require_ton_v6()
+            .with_unpacked_config(self.unpacked_config.as_tuple())
+            .require_ton_v11();
+
+        let libraries = (state_init.libraries, &self.libraries);
+        let mut vm = tycho_vm::VmState::builder()
+            .with_smc_info(smc_info)
+            .with_code(code)
+            .with_data(state_init.data.unwrap_or_default())
+            .with_libraries(&libraries)
+            .with_init_selector(false)
+            .with_raw_stack(stack)
+            .with_gas(gas)
+            .with_modifiers(self.modifiers)
+            .build();
+
+        // Run VM.
+        let exit_code = !vm.run();
+
+        // Prepare output.
+        let stack = std::mem::take(&mut vm.stack);
+        let gas_used = vm.gas.consumed();
+        drop(vm);
+
+        Ok(VmOutput {
+            exit_code,
+            stack,
+            gas_used,
+        })
+    }
+}
+
+pub struct RunGetterParams {
+    pub method_id: i64,
+    pub gas_limit: u64,
+    pub args: Vec<RcStackValue>,
+}
+
+impl RunGetterParams {
+    const DEFAULT_GAS_LIMIT: u64 = 200_000;
+
+    pub fn new<T: MethodId>(id: T) -> Self {
+        Self {
+            method_id: id.compute_id(),
+            gas_limit: Self::DEFAULT_GAS_LIMIT,
+            args: Vec::new(),
+        }
+    }
+
+    pub fn with_args<I: IntoIterator<Item = RcStackValue> + 'static>(mut self, args: I) -> Self {
+        self.args = match castaway::cast!(args, Vec<RcStackValue>) {
+            Ok(args) => args,
+            Err(args) => args.into_iter().collect(),
+        };
+        self
+    }
+
+    pub fn with_gas_limit(mut self, limit: u64) -> Self {
+        self.gas_limit = limit;
+        self
+    }
+
+    pub fn build(mut self) -> (GasParams, SafeRc<Stack>) {
+        let gas = GasParams {
+            max: self.gas_limit,
+            limit: self.gas_limit,
+            ..GasParams::getter()
+        };
+
+        let method_id = RcStackValue::new_dyn_value(BigInt::from(self.method_id));
+        self.args.push(method_id);
+        let stack = SafeRc::new(Stack::with_items(self.args));
+
+        (gas, stack)
+    }
+}
+
+#[derive(Clone)]
+pub struct VmOutput {
+    pub exit_code: i32,
+    pub stack: SafeRc<Stack>,
+    pub gas_used: u64,
+}
+
+impl VmOutput {
+    pub fn no_code() -> Self {
+        thread_local! {
+            static NO_CODE: VmOutput = VmOutput {
+                exit_code: -14,
+                stack: Default::default(),
+                gas_used: 0,
+            };
+        }
+
+        NO_CODE.with(Clone::clone)
+    }
+}
+
+#[derive(Debug, thiserror::Error)]
+pub enum ExecutorError {
+    #[error("failed to prepare account state: {0}")]
+    StateAccess(#[from] tycho_types::error::Error),
+    #[error("account is not active")]
+    AccountNotActive,
+    #[error("failed to parse output: {0}")]
+    FailedToParse(anyhow::Error),
 }
