@@ -6,7 +6,7 @@ use std::time::Instant;
 use anyhow::{Context, Result};
 use rusqlite::{Connection, OpenFlags, params_from_iter};
 use tycho_types::cell::HashBytes;
-use tycho_types::models::StdAddr;
+use tycho_types::models::{BlockId, StdAddr};
 use tycho_util::FastHashMap;
 
 use super::db::*;
@@ -93,7 +93,7 @@ impl TokensRepo {
 
                 let started_at = Instant::now();
                 tx.commit()?;
-                tracing::warn!(
+                tracing::debug!(
                     elapsed = %humantime::format_duration(started_at.elapsed()),
                     affected_rows,
                     "commit",
@@ -120,7 +120,7 @@ impl TokensRepo {
 
             let started_at = Instant::now();
             tx.commit()?;
-            tracing::warn!(
+            tracing::debug!(
                 elapsed = %humantime::format_duration(started_at.elapsed()),
                 affected_rows,
                 "commit",
@@ -128,6 +128,20 @@ impl TokensRepo {
 
             Ok(affected_rows)
         })
+    }
+
+    pub async fn get_reindex_completion_block_id(&self) -> Result<Option<BlockId>> {
+        let conn = self.readers.get().await?;
+        let mut stmt = conn.prepare("SELECT value FROM node_state")?;
+
+        let mut iter = stmt.query_map((), |row| SqlType::<BlockId>::get(row, 0))?;
+        match iter.next() {
+            Some(block_id) => {
+                anyhow::ensure!(iter.next().is_none(), "too many rows in response");
+                block_id.map(Some).map_err(Into::into)
+            }
+            None => Ok(None),
+        }
     }
 
     pub async fn get_all_known_interfaces(&self) -> Result<FastHashMap<HashBytes, InterfaceType>> {
@@ -284,6 +298,20 @@ impl TokensRepoTransaction {
         self.batches.lock().unwrap().push(Box::new(f))
     }
 
+    pub fn set_reindex_complete(&self, init_block_id: &BlockId) {
+        let init_block_id = *init_block_id;
+        self.execute(move |tx| {
+            tx.execute(
+                "INSERT INTO node_state (param,value) VALUES (?, ?) \
+                ON CONFLICT(param) DO UPDATE SET value = excluded.value",
+                (
+                    NodeStateKey::ReindexComplete as u32,
+                    SqlType::wrap(&init_block_id),
+                ),
+            )
+        });
+    }
+
     pub fn insert_known_interfaces(&self, rows: Vec<KnownInterface>) {
         self.execute_rows_simple(rows, |sql, values| {
             write!(
@@ -294,6 +322,32 @@ impl TokensRepoTransaction {
                     is_broken = excluded.is_broken"
             )
         })
+    }
+
+    pub fn remove_unused_interfaces(&self) {
+        self.execute(|tx| {
+            tx.execute(
+                "DELETE FROM known_interfaces WHERE code_hash IN ( \
+                    SELECT ki.code_hash \
+                    FROM known_interfaces ki \
+                    LEFT JOIN jetton_masters jm ON jm.code_hash = ki.code_hash \
+                    LEFT JOIN jetton_wallets jw ON jw.code_hash = ki.code_hash \
+                    GROUP BY ki.code_hash \
+                    HAVING (COUNT(jm.address) + COUNT(jw.address)) = 0 \
+                )",
+                (),
+            )
+        });
+    }
+
+    pub fn clear_contracts(&self) {
+        self.execute(|tx| {
+            tx.execute_batch(
+                "DELETE FROM jetton_masters; \
+                DELETE FROM jetton_wallets",
+            )?;
+            Ok(0)
+        });
     }
 
     pub fn insert_jetton_masters(&self, rows: Vec<JettonMaster>) {
@@ -452,6 +506,11 @@ fn prepare_connection(connection: &Connection) -> rusqlite::Result<()> {
         PRAGMA temp_store = MEMORY;\
         PRAGMA mmap_size = 268435456;",
     )
+}
+
+#[repr(u32)]
+enum NodeStateKey {
+    ReindexComplete = 1000,
 }
 
 #[cfg(test)]

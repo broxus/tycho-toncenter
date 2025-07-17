@@ -2,6 +2,7 @@ use std::sync::Arc;
 
 use anyhow::{Context, Result};
 use futures_util::future::BoxFuture;
+use serde::{Deserialize, Serialize};
 use tycho_core::block_strider::{BlockSubscriber, BlockSubscriberContext};
 use tycho_core::storage::CoreStorage;
 use tycho_rpc::RpcState;
@@ -9,9 +10,12 @@ use tycho_storage::StorageContext;
 use tycho_types::models::BlockId;
 use tycho_types::prelude::*;
 use tycho_util::FastDashMap;
+use tycho_util::config::PartialConfig;
 
 use self::interface::InterfaceType;
-use self::ops::sync_after_boot::{SyncOutput, sync_after_boot};
+use self::ops::sync_after_boot::{
+    FullSyncParams, SyncOutput, sync_after_boot_full, sync_after_boot_simple,
+};
 use self::repo::TokensRepo;
 
 pub mod db;
@@ -26,6 +30,23 @@ mod ops {
 
 const SUBDIR: &str = "toncenter";
 
+#[derive(Debug, Clone, Serialize, Deserialize, PartialConfig)]
+#[serde(default)]
+pub struct TonCenterRpcConfig {
+    #[important]
+    pub force_reindex: bool,
+    pub sync_group_count: usize,
+}
+
+impl Default for TonCenterRpcConfig {
+    fn default() -> Self {
+        Self {
+            force_reindex: false,
+            sync_group_count: 10,
+        }
+    }
+}
+
 #[derive(Clone)]
 pub struct TonCenterRpcState {
     inner: Arc<Inner>,
@@ -36,6 +57,7 @@ impl TonCenterRpcState {
         context: StorageContext,
         rpc_state: RpcState,
         core_storage: CoreStorage,
+        config: TonCenterRpcConfig,
     ) -> Result<Self> {
         let dir = context
             .root_dir()
@@ -52,6 +74,7 @@ impl TonCenterRpcState {
                 core_storage,
                 rpc_state,
                 tokens,
+                config,
             }),
         })
     }
@@ -64,14 +87,29 @@ impl TonCenterRpcState {
         &self.inner.rpc_state
     }
 
-    pub async fn sync_after_boot(&self, init_mc_block: &BlockId, _full: bool) -> Result<()> {
-        let SyncOutput { known_interfaces } = sync_after_boot(
-            init_mc_block,
-            &self.inner.core_storage,
-            &self.inner.rpc_state,
-            &self.inner.tokens,
-        )
-        .await?;
+    pub async fn sync_after_boot(&self, init_mc_block: &BlockId) -> Result<()> {
+        let force_reindex = self.inner.config.force_reindex;
+        let reindex_completed_at = self.inner.tokens.get_reindex_completion_block_id().await?;
+        if let Some(prev_reindex_at) = &reindex_completed_at
+            && force_reindex
+        {
+            tracing::info!(%prev_reindex_at);
+        }
+
+        let SyncOutput { known_interfaces } = if force_reindex || reindex_completed_at.is_none() {
+            sync_after_boot_full(
+                init_mc_block,
+                &self.inner.core_storage,
+                &self.inner.rpc_state,
+                &self.inner.tokens,
+                FullSyncParams {
+                    sync_group_count: self.inner.config.sync_group_count,
+                },
+            )
+            .await?
+        } else {
+            sync_after_boot_simple(&self.inner.tokens).await?
+        };
 
         // TODO: Optimize.
         for (code_hash, interface) in known_interfaces.into_iter() {
@@ -95,6 +133,7 @@ struct Inner {
     core_storage: CoreStorage,
     rpc_state: RpcState,
     tokens: TokensRepo,
+    config: TonCenterRpcConfig,
 }
 
 // TEMP

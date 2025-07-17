@@ -17,19 +17,40 @@ use crate::state::models::{JettonMaster, JettonWallet, KnownInterface};
 use crate::state::repo::{TokensRepo, TokensRepoTransaction};
 use crate::util::tonlib_helpers::{RunGetterParams, SimpleExecutor};
 
-// TODO: Move into config.
-const BATCH_SIZE: usize = 10;
+pub struct FullSyncParams {
+    pub sync_group_count: usize,
+}
 
 pub struct SyncOutput {
     pub known_interfaces: FastDashMap<HashBytes, InterfaceType>,
 }
 
-pub async fn sync_after_boot(
+pub async fn sync_after_boot_simple(tokens: &TokensRepo) -> Result<SyncOutput> {
+    tracing::info!("doing simple reindex");
+
+    tokens
+        .with_transaction(|tx| tx.remove_unused_interfaces())
+        .await
+        .context("failed to cleanup unused interfaces")?;
+
+    let known_interfaces = tokens
+        .get_all_known_interfaces()
+        .await?
+        .into_iter()
+        .collect::<FastDashMap<_, _>>();
+
+    Ok(SyncOutput { known_interfaces })
+}
+
+pub async fn sync_after_boot_full(
     init_mc_block: &BlockId,
     core_storage: &CoreStorage,
     rpc_state: &RpcState,
     tokens: &TokensRepo,
+    params: FullSyncParams,
 ) -> Result<SyncOutput> {
+    tracing::info!("doing full reindex");
+
     // Split virtual shards.
     let LoadedVirtualShards {
         virtual_shards,
@@ -52,6 +73,12 @@ pub async fn sync_after_boot(
 
     let tokens = tokens.clone();
     let context = tokio::task::spawn_blocking(move || {
+        let tx = TokensRepoTransaction::default();
+        tx.clear_contracts();
+        tokens
+            .write_blocking(tx)
+            .context("failed to clear contracts")?;
+
         let context = InitialSyncContext {
             known_interfaces,
             skip_code: Default::default(),
@@ -60,7 +87,7 @@ pub async fn sync_after_boot(
         };
 
         // TODO: Optimize.
-        let mut groups = (0..BATCH_SIZE)
+        let mut groups = (0..params.sync_group_count)
             .map(|_| Vec::<(ShardIdent, ShardAccountsDict)>::new())
             .collect::<Box<[Vec<_>]>>();
 
@@ -82,9 +109,18 @@ pub async fn sync_after_boot(
             }
         });
 
-        context
+        Ok::<_, anyhow::Error>(context)
     })
-    .await?;
+    .await??;
+
+    context
+        .tokens
+        .with_transaction(|tx| {
+            tx.remove_unused_interfaces();
+            tx.set_reindex_complete(init_mc_block);
+        })
+        .await
+        .context("failed to cleanup unused interfaces")?;
 
     // Done
     Ok(SyncOutput {

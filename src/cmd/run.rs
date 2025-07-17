@@ -13,7 +13,7 @@ use tycho_core::global_config::GlobalConfig;
 use tycho_core::node::{NodeBase, NodeBaseConfig, NodeKeys};
 use tycho_rpc::{RpcConfig, RpcEndpoint, RpcState};
 use tycho_toncenter::api;
-use tycho_toncenter::state::TonCenterRpcState;
+use tycho_toncenter::state::{TonCenterRpcConfig, TonCenterRpcState};
 use tycho_util::cli;
 use tycho_util::cli::config::ThreadPoolConfig;
 use tycho_util::cli::logger::LoggerConfig;
@@ -126,7 +126,7 @@ impl Cmd {
 
         // Prepare RPC state.
         let rpc_state = RpcState::builder()
-            .with_config(node_config.rpc.clone())
+            .with_config(node_config.rpc.base.clone())
             .with_storage(node.core_storage.clone())
             .with_blockchain_rpc_client(node.blockchain_rpc_client.clone())
             .with_zerostate_id(node.global_config.zerostate)
@@ -140,13 +140,15 @@ impl Cmd {
             node.storage_context.clone(),
             rpc_state.clone(),
             node.core_storage.clone(),
+            node_config.rpc.toncenter.clone(),
         )
         .await
         .context("failed to create an extended RPC state")?;
 
-        ext_rpc_state.sync_after_boot(&init_block_id, true).await?;
+        ext_rpc_state.sync_after_boot(&init_block_id).await?;
 
         // Bind RPC.
+
         let _rpc_task = {
             let toncenter_routes = axum::Router::new()
                 .nest("/toncenter/v2", api::toncenter_v2::router())
@@ -158,7 +160,7 @@ impl Cmd {
                 .await
                 .context("failed to setup RPC server endpoint")?;
 
-            tracing::info!(listen_addr = %node_config.rpc.listen_addr, "RPC server started");
+            tracing::info!(listen_addr = %node_config.rpc.base.listen_addr, "RPC server started");
             JoinTask::new(async move {
                 if let Err(e) = endpoint.serve().await {
                     tracing::error!("RPC server failed: {e:?}");
@@ -214,7 +216,7 @@ struct NodeConfig {
     #[important]
     metrics: Option<MetricsConfig>,
     #[partial]
-    rpc: RpcConfig,
+    rpc: ExtRpcConfig,
 }
 
 impl Default for NodeConfig {
@@ -224,7 +226,18 @@ impl Default for NodeConfig {
             threads: ThreadPoolConfig::default(),
             logger_config: LoggerConfig::default(),
             metrics: Some(MetricsConfig::default()),
-            rpc: RpcConfig::default(),
+            rpc: ExtRpcConfig::default(),
         }
     }
+}
+
+#[derive(Default, Debug, Clone, Serialize, Deserialize, PartialConfig)]
+#[serde(default)]
+struct ExtRpcConfig {
+    #[partial]
+    #[serde(flatten)]
+    base: RpcConfig,
+
+    #[partial]
+    toncenter: TonCenterRpcConfig,
 }
