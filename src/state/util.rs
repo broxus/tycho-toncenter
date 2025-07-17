@@ -430,7 +430,7 @@ impl SqlTypeRepr for HashBytes {
     }
 }
 
-impl SqlTypeRepr for crate::state::interface::InterfaceType {
+impl SqlTypeRepr for crate::state::parser::InterfaceType {
     #[inline]
     fn from_sql_impl(value: ValueRef<'_>) -> Result<Self, FromSqlError> {
         let id = u8::from_sql_impl(value)?;

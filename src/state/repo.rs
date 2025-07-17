@@ -10,8 +10,8 @@ use tycho_types::models::{BlockId, StdAddr};
 use tycho_util::FastHashMap;
 
 use super::db::*;
-use super::interface::InterfaceType;
 use super::models::*;
+use super::parser::InterfaceType;
 use super::util::*;
 
 #[derive(Clone)]
@@ -350,6 +350,47 @@ impl TokensRepoTransaction {
         });
     }
 
+    pub fn remove_contracts(&self, rows: Vec<StdAddr>) {
+        const TABLES: [&'static str; 2] = ["jetton_masters", "jetton_wallets"];
+
+        let row_count = rows.len();
+        if row_count == 0 {
+            return;
+        }
+
+        let split = SplitBatch::prepare::<StdAddr>(row_count);
+
+        self.execute(move |tx| {
+            let mut affected_rows = 0usize;
+
+            for table in TABLES {
+                let mut rows = rows.iter();
+                let mut execute = |n: usize, values: &str| {
+                    let mut stmt = QueryBuffer::with(|sql| {
+                        write!(sql, "DELETE FROM {table} WHERE address IN ({values})").unwrap();
+                        tracing::trace!(sql);
+                        tx.prepare(sql)
+                    })?;
+                    stmt.execute(params_from_iter(
+                        rows.by_ref()
+                            .take(n)
+                            .flat_map(|item| item.as_columns_iter()),
+                    ))
+                };
+
+                for _ in 0..split.batch_count {
+                    affected_rows += execute(split.rows_per_batch, split.batch_values)?;
+                }
+                if split.tail_len > 0 {
+                    affected_rows += execute(split.tail_len, &split.tail_values)?;
+                }
+                assert!(rows.next().is_none());
+            }
+
+            Ok(affected_rows)
+        });
+    }
+
     pub fn insert_jetton_masters(&self, rows: Vec<JettonMaster>) {
         self.execute_rows_simple(rows, |sql, values| {
             write!(
@@ -419,6 +460,49 @@ impl TokensRepoTransaction {
             return;
         }
 
+        let split = SplitBatch::prepare::<T>(row_count);
+
+        self.execute(move |tx| {
+            let mut rows = rows.iter();
+            let mut execute = |n: usize, values: &str| {
+                let mut stmt = QueryBuffer::with(|sql| {
+                    fmt(sql, values).unwrap();
+                    tracing::trace!(sql);
+                    tx.prepare(sql)
+                })?;
+                stmt.execute(params_from_iter(
+                    rows.by_ref()
+                        .take(n)
+                        .flat_map(|item| item.as_columns_iter()),
+                ))
+            };
+
+            let mut affected_rows = 0usize;
+            for _ in 0..split.batch_count {
+                affected_rows += execute(split.rows_per_batch, split.batch_values)?;
+            }
+            if split.tail_len > 0 {
+                affected_rows += execute(split.tail_len, &split.tail_values)?;
+            }
+            assert!(rows.next().is_none());
+            Ok(affected_rows)
+        });
+    }
+}
+
+struct SplitBatch {
+    rows_per_batch: usize,
+    batch_count: usize,
+    tail_len: usize,
+    batch_values: &'static str,
+    tail_values: String,
+}
+
+impl SplitBatch {
+    fn prepare<T>(row_count: usize) -> Self
+    where
+        T: SqlColumnsRepr + KnownColumnCount,
+    {
         let rows_per_batch = SQLITE_MAX_VARIABLE_NUMBER / T::COLUMN_COUNT;
         let batch_count = row_count / rows_per_batch;
         let tail_len = row_count % rows_per_batch;
@@ -439,31 +523,13 @@ impl TokensRepoTransaction {
             "prepared param list"
         );
 
-        self.execute(move |tx| {
-            let mut rows = rows.iter();
-            let mut execute = |n: usize, values: &str| {
-                let mut stmt = QueryBuffer::with(|sql| {
-                    fmt(sql, values).unwrap();
-                    tracing::trace!(sql);
-                    tx.prepare(sql)
-                })?;
-                stmt.execute(params_from_iter(
-                    rows.by_ref()
-                        .take(n)
-                        .flat_map(|item| item.as_columns_iter()),
-                ))
-            };
-
-            let mut affected_rows = 0usize;
-            for _ in 0..batch_count {
-                affected_rows += execute(rows_per_batch, batch_values)?;
-            }
-            if tail_len > 0 {
-                affected_rows += execute(tail_len, &tail_values)?;
-            }
-            assert!(rows.next().is_none());
-            Ok(affected_rows)
-        });
+        Self {
+            rows_per_batch,
+            batch_count,
+            tail_len,
+            batch_values,
+            tail_values,
+        }
     }
 }
 

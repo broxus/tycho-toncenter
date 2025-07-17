@@ -170,6 +170,7 @@ impl Cmd {
         };
 
         let (rpc_block_subscriber, rpc_state_subscriber) = rpc_state.split();
+        let (rpc_ext_block_subscriber, rpc_ext_state_subscriber) = ext_rpc_state.split();
 
         // Build strider.
         let archive_block_provider = node.build_archive_block_provider();
@@ -185,9 +186,14 @@ impl Cmd {
             (
                 ShardStateApplier::new(
                     node.core_storage.clone(),
-                    (rpc_state_subscriber, ps_subscriber),
+                    (
+                        rpc_state_subscriber,
+                        rpc_ext_state_subscriber,
+                        ps_subscriber,
+                    ),
                 ),
-                (rpc_block_subscriber, ext_rpc_state),
+                rpc_block_subscriber,
+                rpc_ext_block_subscriber,
                 node.validator_resolver().clone(),
                 MetricsSubscriber,
             )
