@@ -1,5 +1,6 @@
 use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
+use std::time::Instant;
 
 use anyhow::{Context, Result};
 use futures_util::FutureExt;
@@ -51,17 +52,20 @@ impl RuntimeSyncState {
         &self,
         block: BlockStuff,
     ) -> impl Future<Output = Result<()>> + Send + 'static {
-        // TEMP
-        tracing::info!(parsed_blocks_len = self.inner.parsed_blocks_len.load(Ordering::Relaxed));
+        let started_at = Instant::now();
 
         let inner = self.inner.clone();
-        tokio::task::spawn_blocking(move || inner.handle_block(block)).map(|res| match res {
-            Ok(res) => res,
-            Err(e) => Err(e.into()),
+        tokio::task::spawn_blocking(move || inner.handle_block(block, started_at)).map(|res| {
+            match res {
+                Ok(res) => res,
+                Err(e) => Err(e.into()),
+            }
         })
     }
 
     pub async fn handle_state(&self, state: ShardStateStuff) -> Result<()> {
+        let started_at = Instant::now();
+
         let block_id = *state.block_id();
         let parsed = loop {
             let block_received = self.inner.block_received.notified();
@@ -87,12 +91,15 @@ impl RuntimeSyncState {
         };
 
         let inner = self.inner.clone();
-        tokio::task::spawn_blocking(move || inner.handle_state(workchain, state, parsed)).await?
+        tokio::task::spawn_blocking(move || {
+            inner.handle_state(workchain, state, parsed, started_at)
+        })
+        .await?
     }
 }
 
 impl Inner {
-    fn handle_block(&self, block: BlockStuff) -> Result<()> {
+    fn handle_block(&self, block: BlockStuff, started_at: Instant) -> Result<()> {
         let parsed = 'parse_block: {
             let extra = block.load_extra()?;
             let account_blocks = extra.account_blocks.load()?;
@@ -147,8 +154,9 @@ impl Inner {
         };
 
         tracing::info!(
-            block_id = %block.id(),
+            block_id = %block.id().as_short_id(),
             updated_accounts = parsed.updated_accounts.len(),
+            elapsed = %humantime::format_duration(started_at.elapsed()),
             "parsed block"
         );
         self.parsed_blocks.insert(block.id().as_short_id(), parsed);
@@ -162,8 +170,9 @@ impl Inner {
         workchain: i8,
         state: ShardStateStuff,
         parsed_block: ParsedBlock,
+        started_at: Instant,
     ) -> Result<()> {
-        let block_id = state.block_id();
+        let block_id = state.block_id().as_short_id();
 
         let mut to_remove = Vec::new();
         let mut batch = InterfaceParserBatch::default();
@@ -205,7 +214,7 @@ impl Inner {
                 account
             } else {
                 tracing::warn!(
-                    block_id = %block_id.as_short_id(),
+                    %block_id,
                     %address,
                     "account should exist but not found in state"
                 );
@@ -219,14 +228,6 @@ impl Inner {
             }
         }
 
-        tracing::info!(
-                    block_id = %block_id.as_short_id(),
-            total_accounts,
-            total_known_interfaces,
-            total_errors,
-            "processed block",
-        );
-
         // TODO: Wait somewhere else?
         let tx = TokensRepoTransaction::default();
         tx.remove_contracts(to_remove);
@@ -239,8 +240,12 @@ impl Inner {
             .context("failed to write tokens info batch")?;
 
         tracing::info!(
-            block_id = %block_id.as_short_id(),
+            %block_id,
+            total_accounts,
+            total_known_interfaces,
+            total_errors,
             affected_rows,
+            elapsed = %humantime::format_duration(started_at.elapsed()),
             "inserted tokens info batch",
         );
         Ok(())
