@@ -1,16 +1,23 @@
+use std::time::Instant;
+
 use anyhow::{Context, Result};
 use tycho_block_util::state::ShardStateStuff;
 use tycho_core::storage::CoreStorage;
 use tycho_rpc::{GenTimings, RpcState};
 use tycho_types::models::{
-    BlockId, BlockchainConfigParams, DepthBalanceInfo, LibDescr, ShardAccount, ShardIdent, StdAddr,
+    Account, BlockId, BlockchainConfigParams, DepthBalanceInfo, LibDescr, ShardAccount, ShardIdent,
+    StdAddr,
 };
 use tycho_types::prelude::*;
 use tycho_util::{FastDashMap, FastHashMap};
+use tycho_vm::{OwnedCellSlice, SafeRc};
 
-use crate::state::parser::{InterfaceCache, InterfaceParser, InterfaceParserBatch};
+use crate::state::parser::{
+    GetWalletAddressOutput, InterfaceCache, InterfaceParser, InterfaceParserBatch, InterfaceType,
+    JettonMasterInterface,
+};
 use crate::state::repo::{TokensRepo, TokensRepoTransaction};
-use crate::util::tonlib_helpers::SimpleExecutor;
+use crate::util::tonlib_helpers::{RunGetterParams, SimpleExecutor};
 
 pub struct FullSyncParams {
     pub sync_group_count: usize,
@@ -29,10 +36,10 @@ pub async fn sync_after_boot_simple(tokens: &TokensRepo) -> Result<SyncOutput> {
         .context("failed to cleanup unused interfaces")?;
 
     let known_interfaces = tokens
-        .get_all_known_interfaces()
+        .read()
         .await?
-        .into_iter()
-        .collect::<FastDashMap<_, _>>();
+        .get_all_known_interfaces()?
+        .collect::<rusqlite::Result<FastDashMap<_, _>>>()?;
 
     Ok(SyncOutput {
         cache: InterfaceCache {
@@ -61,18 +68,20 @@ pub async fn sync_after_boot_full(
         .await
         .context("failed to load virtual shards")?;
 
+    tracing::info!("get known interfaces");
+
     // Load known code hashes cache.
     let known_interfaces = tokens
-        .get_all_known_interfaces()
+        .read()
         .await?
-        .into_iter()
-        .collect::<FastDashMap<_, _>>();
+        .get_all_known_interfaces()?
+        .collect::<rusqlite::Result<FastDashMap<_, _>>>()?;
 
     let executor = SimpleExecutor::new(config, libraries, timings)
         .context("failed to create a simple executor")?;
 
     let tokens = tokens.clone();
-    let (tokens, cache) = tokio::task::spawn_blocking(move || {
+    let (tokens, jetton_masters, executor, cache) = tokio::task::spawn_blocking(move || {
         let tx = TokensRepoTransaction::default();
         tx.clear_contracts();
         tokens
@@ -90,6 +99,7 @@ pub async fn sync_after_boot_full(
                 executor,
             },
             tokens,
+            jetton_master_accounts: Default::default(),
         };
 
         // TODO: Optimize.
@@ -106,7 +116,7 @@ pub async fn sync_after_boot_full(
             for group in groups {
                 scope.spawn(move || {
                     for (shard_ident, accounts) in group {
-                        if let Err(e) = context.run(shard_ident, accounts) {
+                        if let Err(e) = context.process_batch(shard_ident, accounts) {
                             // TODO: Should we just unwrap here?
                             tracing::error!("FATAL, failed to process virtual shard: {e:?}");
                         }
@@ -115,10 +125,85 @@ pub async fn sync_after_boot_full(
             }
         });
 
-        Ok::<_, anyhow::Error>((context.tokens, cache))
+        Ok::<_, anyhow::Error>((
+            context.tokens,
+            context.jetton_master_accounts,
+            context.parser.executor,
+            cache,
+        ))
     })
     .await??;
 
+    tracing::info!("started verify");
+
+    // Verify token wallets info.
+    let reader = tokens.read_owned().await?;
+    let tokens = tokio::task::spawn_blocking(move || {
+        let started_at = Instant::now();
+
+        let mut to_remove = Vec::new();
+
+        let mut total_wallets = 0usize;
+        let mut with_unknown_master = 0usize;
+        let mut with_failed_getter = 0usize;
+        let mut with_mismatched_address = 0usize;
+
+        // TODO: Process in chunks.
+        for item in reader.get_jetton_wallets_brief_info()? {
+            let info = item?;
+            total_wallets += 1;
+
+            // NOTE: There are no writers to `jetton_master_accounts`.
+            let Some(jetton_account) = jetton_masters.get(&info.jetton) else {
+                // Unknown jetton master.
+                to_remove.push(info.address);
+                with_unknown_master += 1;
+                continue;
+            };
+
+            let owner = SafeRc::new_dyn_value(OwnedCellSlice::new_allow_exotic(
+                CellBuilder::build_from(info.owner).unwrap(),
+            ));
+
+            let Ok(output) = executor.run_getter::<GetWalletAddressOutput>(
+                &jetton_account,
+                RunGetterParams::new(JettonMasterInterface::get_wallet_address())
+                    .with_args([owner]),
+            ) else {
+                // TODO: Remove master account here?
+                // Getter failed.
+                to_remove.push(info.address);
+                with_failed_getter += 1;
+                continue;
+            };
+
+            if output.address != info.address {
+                // Computed address mismatch.
+                to_remove.push(info.address);
+                with_mismatched_address += 1;
+            }
+        }
+
+        drop(reader);
+
+        let tx = TokensRepoTransaction::default();
+        tx.remove_jetton_wallets(to_remove);
+        tokens.write_blocking(tx)?;
+
+        tracing::info!(
+            total_wallets,
+            with_unknown_master,
+            with_failed_getter,
+            with_mismatched_address,
+            elapsed = %humantime::format_duration(started_at.elapsed()),
+            "verified jetton wallets",
+        );
+
+        Ok::<_, anyhow::Error>(tokens)
+    })
+    .await??;
+
+    // Finalize state.
     tokens
         .with_transaction(|tx| {
             tx.remove_unused_interfaces();
@@ -134,10 +219,11 @@ pub async fn sync_after_boot_full(
 struct InitialSyncContext<'a> {
     tokens: TokensRepo,
     parser: InterfaceParser<'a>,
+    jetton_master_accounts: FastDashMap<StdAddr, Account>,
 }
 
 impl InitialSyncContext<'_> {
-    fn run(&self, shard_ident: ShardIdent, accounts: ShardAccountsDict) -> Result<()> {
+    fn process_batch(&self, shard_ident: ShardIdent, accounts: ShardAccountsDict) -> Result<()> {
         let Ok::<i8, _>(workchain) = shard_ident.workchain().try_into() else {
             anyhow::bail!("non-standard workchains are not supported");
         };
@@ -149,15 +235,25 @@ impl InitialSyncContext<'_> {
         let mut total_errors = 0usize;
         for item in accounts.iter() {
             let (hash, (_, state)) = item?;
-            let Some(account) = state.load_account()? else {
+            let Some(mut account) = state.load_account()? else {
                 continue;
             };
 
             total_accounts += 1;
 
             let address = StdAddr::new(workchain, hash);
-            match self.parser.handle_account(&address, account, &mut batch) {
-                Ok(known) => total_known_interfaces += known as usize,
+            match self
+                .parser
+                .handle_account(&address, &mut account, &mut batch)
+            {
+                Ok(Some(ty)) => {
+                    total_known_interfaces += 1;
+
+                    if ty == InterfaceType::JettonMaster {
+                        self.jetton_master_accounts.insert(address, account);
+                    }
+                }
+                Ok(None) => {}
                 Err(_) => total_errors += 1,
             }
         }

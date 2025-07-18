@@ -941,18 +941,21 @@ async fn get_jetton_masters(
         return Err(ErrorResponse::too_big_limit(MAX_LIMIT));
     }
 
+    // TODO: Spawn blocking?
     let masters = state
         .tokens()
+        .read()
+        .await
+        .map_err(ErrorResponse::internal)?
         .get_jetton_masters(GetJettonMastersParams {
             master_addresses: query.address,
             admin_addresses: query.admin_address,
             limit: query.limit,
             offset: query.offset,
         })
-        .await
         .map_err(ErrorResponse::internal)?
-        .into_iter()
         .map(|item| {
+            let item = item?;
             Ok::<_, anyhow::Error>(JettonMastersResponseItem {
                 address: item.address,
                 total_supply: item.total_supply,
@@ -990,6 +993,9 @@ async fn get_jetton_wallets(
 
     let wallets = state
         .tokens()
+        .read()
+        .await
+        .map_err(ErrorResponse::internal)?
         .get_jetton_wallets(GetJettonWalletsParams {
             wallet_addresses: query.address,
             owner_addresses: query.owner_address,
@@ -1001,19 +1007,22 @@ async fn get_jetton_wallets(
                 reverse: matches!(sort, SortDirection::Desc),
             }),
         })
-        .await
         .map_err(ErrorResponse::internal)?
         .into_iter()
-        .map(|item| JettonWalletsResponseItem {
-            address: item.address,
-            balance: item.balance,
-            owner: item.owner,
-            jetton: item.jetton,
-            last_transaction_lt: item.last_transaction_lt,
-            code_hash: item.code_hash,
-            data_hash: item.data_hash,
+        .map(|item| {
+            let item = item?;
+            Ok::<_, rusqlite::Error>(JettonWalletsResponseItem {
+                address: item.address,
+                balance: item.balance,
+                owner: item.owner,
+                jetton: item.jetton,
+                last_transaction_lt: item.last_transaction_lt,
+                code_hash: item.code_hash,
+                data_hash: item.data_hash,
+            })
         })
-        .collect::<Vec<_>>();
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(ErrorResponse::internal)?;
 
     Ok(ok_to_response(JettonWalletsResponse::new(wallets)))
 }

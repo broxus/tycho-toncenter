@@ -208,7 +208,7 @@ impl Inner {
                 continue;
             }
 
-            let account = if let Some((_, account)) = accounts.get(&address.address)?
+            let mut account = if let Some((_, account)) = accounts.get(address.address)?
                 && let Some(account) = account.load_account()?
             {
                 account
@@ -222,8 +222,8 @@ impl Inner {
                 continue;
             };
 
-            match parser.handle_account(&address, account, &mut batch) {
-                Ok(known) => total_known_interfaces += known as usize,
+            match parser.handle_account(&address, &mut account, &mut batch) {
+                Ok(known_ty) => total_known_interfaces += known_ty.is_some() as usize,
                 Err(_) => total_errors += 1,
             }
         }

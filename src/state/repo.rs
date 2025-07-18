@@ -7,7 +7,6 @@ use anyhow::{Context, Result};
 use rusqlite::{Connection, OpenFlags, params_from_iter};
 use tycho_types::cell::HashBytes;
 use tycho_types::models::{BlockId, StdAddr};
-use tycho_util::FastHashMap;
 
 use super::db::*;
 use super::models::*;
@@ -130,9 +129,26 @@ impl TokensRepo {
         })
     }
 
-    pub async fn get_reindex_completion_block_id(&self) -> Result<Option<BlockId>> {
-        let conn = self.readers.get().await?;
-        let mut stmt = conn.prepare("SELECT value FROM node_state")?;
+    pub async fn read(&self) -> Result<TokensRepoReader<'_>> {
+        Ok(TokensRepoReader {
+            conn: self.readers.get().await?,
+        })
+    }
+
+    pub async fn read_owned(&self) -> Result<TokensRepoReader<'static>> {
+        Ok(TokensRepoReader {
+            conn: self.readers.get_owned().await?,
+        })
+    }
+}
+
+pub struct TokensRepoReader<'a> {
+    conn: SqlitePoolConnection<'a>,
+}
+
+impl TokensRepoReader<'_> {
+    pub fn get_reindex_completion_block_id(&self) -> Result<Option<BlockId>> {
+        let mut stmt = self.conn.prepare("SELECT value FROM node_state")?;
 
         let mut iter = stmt.query_map((), |row| SqlType::<BlockId>::get(row, 0))?;
         match iter.next() {
@@ -144,25 +160,23 @@ impl TokensRepo {
         }
     }
 
-    pub async fn get_all_known_interfaces(&self) -> Result<FastHashMap<HashBytes, InterfaceType>> {
-        let conn = self.readers.get().await?;
-        let mut stmt = conn.prepare("SELECT code_hash,interface FROM known_interfaces")?;
-
-        stmt.query_map((), |row| {
-            Ok((
-                SqlType::<HashBytes>::get(row, 0)?,
-                SqlType::<InterfaceType>::get(row, 1)?,
-            ))
-        })?
-        .collect::<rusqlite::Result<_>>()
-        .map_err(Into::into)
+    pub fn get_all_known_interfaces(
+        &self,
+    ) -> rusqlite::Result<impl Iterator<Item = rusqlite::Result<(HashBytes, InterfaceType)>>> {
+        self.conn
+            .prepare("SELECT code_hash,interface FROM known_interfaces")?
+            .unbounded_query_map((), |row| {
+                Ok((
+                    SqlType::<HashBytes>::get(row, 0)?,
+                    SqlType::<InterfaceType>::get(row, 1)?,
+                ))
+            })
     }
 
-    // TODO: Return iterator itself.
-    pub async fn get_jetton_masters(
+    pub fn get_jetton_masters(
         &self,
         params: GetJettonMastersParams,
-    ) -> Result<Vec<JettonMaster>> {
+    ) -> rusqlite::Result<impl Iterator<Item = rusqlite::Result<JettonMaster>>> {
         const COLUMNS: &str = "J.address, J.total_supply, J.mintable, J.admin_address, J.jetton_content, \
         J.wallet_code_hash, J.last_transaction_lt, J.code_hash, J.data_hash";
         const TABLE: &str = "jetton_masters as J";
@@ -181,8 +195,7 @@ impl TokensRepo {
         );
         let filter_query = skip_or_where(&filter_query);
 
-        let conn = self.readers.get().await?;
-        let mut stmt = QueryBuffer::with(|sql| {
+        QueryBuffer::with(|sql| {
             write!(
                 sql,
                 "SELECT {COLUMNS} FROM {TABLE} \
@@ -194,10 +207,9 @@ impl TokensRepo {
             .unwrap();
             tracing::trace!(sql);
 
-            conn.prepare(sql)
-        })?;
-
-        stmt.query_map(
+            self.conn.prepare(sql)
+        })?
+        .unbounded_query_map(
             params_from_iter(
                 master_addresses_params
                     .iter()
@@ -205,15 +217,21 @@ impl TokensRepo {
                     .map(SqlType::wrap),
             ),
             |row| JettonMaster::try_from(row),
-        )?
-        .collect::<rusqlite::Result<Vec<_>>>()
-        .map_err(Into::into)
+        )
     }
 
-    pub async fn get_jetton_wallets(
+    pub fn get_jetton_wallets_brief_info(
+        &self,
+    ) -> rusqlite::Result<impl Iterator<Item = rusqlite::Result<BriefJettonWalletInfo>>> {
+        self.conn
+            .prepare("SELECT address, owner, jetton FROM jetton_wallets")?
+            .unbounded_query_map((), |row| BriefJettonWalletInfo::try_from(row))
+    }
+
+    pub fn get_jetton_wallets(
         &self,
         params: GetJettonWalletsParams,
-    ) -> Result<Vec<JettonWallet>> {
+    ) -> rusqlite::Result<impl Iterator<Item = rusqlite::Result<JettonWallet>>> {
         const COLUMNS: &str = "J.address, J.balance, J.owner, J.jetton, \
         J.last_transaction_lt, J.code_hash, J.data_hash";
         const TABLE: &str = "jetton_wallets as J";
@@ -253,8 +271,7 @@ impl TokensRepo {
         let filter_query = skip_or_where(&filter_query);
         let order_by = order_by.unwrap_or_else(|| format!("{sort_column} {sort_order}"));
 
-        let conn = self.readers.get().await?;
-        let mut stmt = QueryBuffer::with(|sql| {
+        QueryBuffer::with(|sql| {
             write!(
                 sql,
                 "SELECT {COLUMNS} FROM {TABLE} \
@@ -266,10 +283,9 @@ impl TokensRepo {
             .unwrap();
             tracing::trace!(sql);
 
-            conn.prepare(sql)
-        })?;
-
-        stmt.query_map(
+            self.conn.prepare(sql)
+        })?
+        .unbounded_query_map(
             params_from_iter(
                 wallet_addresses
                     .iter()
@@ -278,9 +294,7 @@ impl TokensRepo {
                     .map(SqlType::wrap),
             ),
             |row| JettonWallet::try_from(row),
-        )?
-        .collect::<rusqlite::Result<Vec<_>>>()
-        .map_err(Into::into)
+        )
     }
 }
 
@@ -351,7 +365,7 @@ impl TokensRepoTransaction {
     }
 
     pub fn remove_contracts(&self, rows: Vec<StdAddr>) {
-        const TABLES: [&'static str; 2] = ["jetton_masters", "jetton_wallets"];
+        const TABLES: [&str; 2] = ["jetton_masters", "jetton_wallets"];
 
         let row_count = rows.len();
         if row_count == 0 {
@@ -613,15 +627,14 @@ mod tests {
         let repo = TokensRepo::open(path).await?;
 
         for _ in 0..3 {
-            let result = repo
-                .get_jetton_masters(GetJettonMastersParams {
-                    master_addresses: Some(vec![dumb_addr(0x11), dumb_addr(0x22)]),
-                    admin_addresses: Some(vec![dumb_addr(0x11)]),
-                    limit: NonZeroUsize::new(10).unwrap(),
-                    offset: 0,
-                })
-                .await?;
-            assert!(result.is_empty());
+            let reader = repo.read().await?;
+            let mut result = reader.get_jetton_masters(GetJettonMastersParams {
+                master_addresses: Some(vec![dumb_addr(0x11), dumb_addr(0x22)]),
+                admin_addresses: Some(vec![dumb_addr(0x11)]),
+                limit: NonZeroUsize::new(10).unwrap(),
+                offset: 0,
+            })?;
+            assert!(result.next().is_none());
         }
 
         let mut to_insert = [0x11, 0x22, 0x33, 0x44, 0x55].map(|addr| JettonMaster {
@@ -652,13 +665,15 @@ mod tests {
 
         for _ in 0..3 {
             let result = repo
+                .read()
+                .await?
                 .get_jetton_masters(GetJettonMastersParams {
                     master_addresses: None,
                     admin_addresses: None,
                     limit: NonZeroUsize::new(10).unwrap(),
                     offset: 0,
-                })
-                .await?;
+                })?
+                .collect::<rusqlite::Result<Vec<_>>>()?;
             assert_eq!(result, to_insert);
         }
 
@@ -670,13 +685,15 @@ mod tests {
         assert_eq!(changed, 3);
 
         let result = repo
+            .read()
+            .await?
             .get_jetton_masters(GetJettonMastersParams {
                 master_addresses: None,
                 admin_addresses: None,
                 limit: NonZeroUsize::new(10).unwrap(),
                 offset: 0,
-            })
-            .await?;
+            })?
+            .collect::<rusqlite::Result<Vec<_>>>()?;
         assert_eq!(result, &to_insert[3..]);
 
         Ok(())
@@ -691,18 +708,17 @@ mod tests {
         let repo = TokensRepo::open(path).await?;
 
         for _ in 0..3 {
-            let result = repo
-                .get_jetton_wallets(GetJettonWalletsParams {
-                    wallet_addresses: None,
-                    owner_addresses: Some(vec![dumb_addr(0x11), dumb_addr(0x22)]),
-                    jetton_addresses: Some(vec![dumb_addr(0x11)]),
-                    limit: NonZeroUsize::new(10).unwrap(),
-                    offset: 0,
-                    exclude_zero_balance: true,
-                    order_by: None,
-                })
-                .await?;
-            assert!(result.is_empty());
+            let reader = repo.read().await?;
+            let mut result = reader.get_jetton_wallets(GetJettonWalletsParams {
+                wallet_addresses: None,
+                owner_addresses: Some(vec![dumb_addr(0x11), dumb_addr(0x22)]),
+                jetton_addresses: Some(vec![dumb_addr(0x11)]),
+                limit: NonZeroUsize::new(10).unwrap(),
+                offset: 0,
+                exclude_zero_balance: true,
+                order_by: None,
+            })?;
+            assert!(result.next().is_none());
         }
 
         let mut to_insert = [0x11, 0x22, 0x33, 0x44, 0x55].map(|addr| JettonWallet {
@@ -731,6 +747,8 @@ mod tests {
 
         for _ in 0..3 {
             let result = repo
+                .read()
+                .await?
                 .get_jetton_wallets(GetJettonWalletsParams {
                     wallet_addresses: None,
                     owner_addresses: None,
@@ -739,13 +757,15 @@ mod tests {
                     offset: 0,
                     exclude_zero_balance: true,
                     order_by: None,
-                })
-                .await?;
+                })?
+                .collect::<rusqlite::Result<Vec<_>>>()?;
             assert_eq!(result, to_insert);
         }
 
         to_insert.reverse();
         let result = repo
+            .read()
+            .await?
             .get_jetton_wallets(GetJettonWalletsParams {
                 wallet_addresses: None,
                 owner_addresses: None,
@@ -754,11 +774,13 @@ mod tests {
                 offset: 0,
                 exclude_zero_balance: true,
                 order_by: Some(OrderJettonWalletsBy::Balance { reverse: true }),
-            })
-            .await?;
+            })?
+            .collect::<rusqlite::Result<Vec<_>>>()?;
         assert_eq!(result, to_insert);
 
         let result = repo
+            .read()
+            .await?
             .get_jetton_wallets(GetJettonWalletsParams {
                 wallet_addresses: None,
                 owner_addresses: Some(vec![dumb_addr(0x22)]),
@@ -767,8 +789,8 @@ mod tests {
                 offset: 0,
                 exclude_zero_balance: true,
                 order_by: Some(OrderJettonWalletsBy::Balance { reverse: true }),
-            })
-            .await?;
+            })?
+            .collect::<rusqlite::Result<Vec<_>>>()?;
         assert_eq!(result, to_insert);
 
         let changed = repo
@@ -780,6 +802,8 @@ mod tests {
 
         to_insert.reverse();
         let result = repo
+            .read()
+            .await?
             .get_jetton_wallets(GetJettonWalletsParams {
                 wallet_addresses: None,
                 owner_addresses: None,
@@ -788,8 +812,8 @@ mod tests {
                 offset: 0,
                 exclude_zero_balance: true,
                 order_by: None,
-            })
-            .await?;
+            })?
+            .collect::<rusqlite::Result<Vec<_>>>()?;
         assert_eq!(result, &to_insert[3..]);
 
         Ok(())

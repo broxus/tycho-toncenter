@@ -45,6 +45,15 @@ row! {
     }
 }
 
+row! {
+    #[derive(Debug, Clone, PartialEq, Eq)]
+    pub struct BriefJettonWalletInfo {
+        pub address: StdAddr,
+        pub owner: StdAddr,
+        pub jetton: StdAddr,
+    }
+}
+
 // === Params ===
 
 pub struct GetJettonMastersParams {

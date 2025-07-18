@@ -240,7 +240,7 @@ impl SimpleExecutor {
 
     pub fn run_getter<R: FromStack>(
         &self,
-        account: Account,
+        account: &Account,
         params: RunGetterParams,
     ) -> Result<R, ExecutorError> {
         let VmOutput {
@@ -268,19 +268,19 @@ impl SimpleExecutor {
     // TODO: Use in toncenter V2 API.
     pub fn run_getter_raw(
         &self,
-        account: Account,
+        account: &Account,
         params: RunGetterParams,
     ) -> Result<VmOutput, ExecutorError> {
-        let IntAddr::Std(address) = account.address else {
+        let IntAddr::Std(address) = &account.address else {
             return Err(ExecutorError::StateAccess(
                 tycho_types::error::Error::InvalidTag,
             ));
         };
-        let AccountState::Active(state_init) = account.state else {
+        let AccountState::Active(state_init) = &account.state else {
             return Err(ExecutorError::AccountNotActive);
         };
 
-        let Some(code) = state_init.code else {
+        let Some(code) = &state_init.code else {
             return Ok(VmOutput::no_code());
         };
 
@@ -291,7 +291,7 @@ impl SimpleExecutor {
             .with_now(self.timings.gen_utime)
             .with_block_lt(self.timings.gen_lt)
             .with_tx_lt(self.timings.gen_lt)
-            .with_account_balance(account.balance)
+            .with_account_balance(account.balance.clone())
             .with_account_addr(address.clone().into())
             .with_config(self.raw_config.clone())
             .require_ton_v4()
@@ -302,11 +302,11 @@ impl SimpleExecutor {
             .with_unpacked_config(self.unpacked_config.as_tuple())
             .require_ton_v11();
 
-        let libraries = (state_init.libraries, &self.libraries);
+        let libraries = (&state_init.libraries, &self.libraries);
         let mut vm = tycho_vm::VmState::builder()
             .with_smc_info(smc_info)
-            .with_code(code)
-            .with_data(state_init.data.unwrap_or_default())
+            .with_code(code.clone())
+            .with_data(state_init.data.clone().unwrap_or_default())
             .with_libraries(&libraries)
             .with_init_selector(false)
             .with_raw_stack(stack)

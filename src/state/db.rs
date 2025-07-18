@@ -1,3 +1,4 @@
+use std::mem::ManuallyDrop;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicUsize, Ordering};
 
@@ -5,6 +6,7 @@ use rusqlite::{Connection, OpenFlags};
 use tokio::sync::{mpsc, oneshot};
 
 pub type SqlitePool = bb8::Pool<SqliteConnectionManager>;
+pub type SqlitePoolConnection<'a> = bb8::PooledConnection<'a, SqliteConnectionManager>;
 
 pub struct SqliteConnectionManager {
     path: PathBuf,
@@ -130,6 +132,99 @@ impl SqliteDispatcher {
         }
 
         unreachable!("receiver thread cannot be dropped while `self.tx` is still alive");
+    }
+}
+
+// === Statement Helpers ===
+
+pub trait StatementExt<'conn>: Sized {
+    fn unbounded_query<P: rusqlite::Params>(
+        self,
+        params: P,
+    ) -> rusqlite::Result<UnboundedRows<'conn>>;
+
+    #[inline]
+    fn unbounded_query_map<P: rusqlite::Params, T, F>(
+        self,
+        params: P,
+        f: F,
+    ) -> rusqlite::Result<MappedUnboundedRows<'conn, F>>
+    where
+        F: FnMut(&rusqlite::Row<'_>) -> rusqlite::Result<T>,
+    {
+        self.unbounded_query(params).map(|rows| rows.map(f))
+    }
+}
+
+impl<'conn> StatementExt<'conn> for rusqlite::Statement<'conn> {
+    #[inline]
+    fn unbounded_query<P: rusqlite::Params>(
+        self,
+        params: P,
+    ) -> rusqlite::Result<UnboundedRows<'conn>> {
+        UnboundedRows::query(Box::new(self), params)
+    }
+}
+
+#[must_use = "iterators are lazy and do nothing unless consumed"]
+pub struct MappedUnboundedRows<'conn, F> {
+    inner: UnboundedRows<'conn>,
+    map: F,
+}
+
+impl<T, F> Iterator for MappedUnboundedRows<'_, F>
+where
+    F: FnMut(&rusqlite::Row<'_>) -> rusqlite::Result<T>,
+{
+    type Item = rusqlite::Result<T>;
+
+    #[inline]
+    fn next(&mut self) -> Option<Self::Item> {
+        let map = &mut self.map;
+
+        self.inner
+            .rows
+            .next()
+            .transpose()
+            .map(|row_result| row_result.and_then(map))
+    }
+}
+
+pub struct UnboundedRows<'conn> {
+    rows: ManuallyDrop<rusqlite::Rows<'static>>,
+    #[expect(unused)]
+    stmt: Box<rusqlite::Statement<'conn>>,
+}
+
+impl<'conn> UnboundedRows<'conn> {
+    pub fn query<P: rusqlite::Params>(
+        mut stmt: Box<rusqlite::Statement<'conn>>,
+        params: P,
+    ) -> rusqlite::Result<Self> {
+        let rows = stmt.query(params)?;
+
+        Ok(Self {
+            // SAFETY: `rows` will be manually dropped before the `statement`.
+            rows: ManuallyDrop::new(unsafe {
+                std::mem::transmute::<rusqlite::Rows<'_>, rusqlite::Rows<'static>>(rows)
+            }),
+            stmt,
+        })
+    }
+
+    #[inline]
+    pub fn map<T, F>(self, map: F) -> MappedUnboundedRows<'conn, F>
+    where
+        F: FnMut(&rusqlite::Row<'_>) -> rusqlite::Result<T>,
+    {
+        MappedUnboundedRows { inner: self, map }
+    }
+}
+
+impl Drop for UnboundedRows<'_> {
+    fn drop(&mut self) {
+        // SAFETY: `rows` and `statement` are dropped only once.
+        unsafe { ManuallyDrop::drop(&mut self.rows) }
     }
 }
 

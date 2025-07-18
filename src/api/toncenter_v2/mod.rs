@@ -1192,7 +1192,7 @@ fn run_getter(
         modifiers: config.modifiers,
     }
     .run_getter_raw(
-        account,
+        &account,
         RunGetterParams::new(method_id)
             .with_args(stack)
             .with_gas_limit(gas_limit),

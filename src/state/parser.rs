@@ -50,16 +50,16 @@ impl InterfaceParser<'_> {
     pub fn handle_account(
         &self,
         address: &StdAddr,
-        mut account: Account,
+        account: &mut Account,
         batch: &mut InterfaceParserBatch,
-    ) -> Result<bool> {
+    ) -> Result<Option<InterfaceType>> {
         let AccountState::Active(StateInit {
             code: Some(code),
             data,
             ..
         }) = &mut account.state
         else {
-            return Ok(false);
+            return Ok(None);
         };
 
         if code.descriptor().is_library() {
@@ -75,12 +75,12 @@ impl InterfaceParser<'_> {
         let known_interface = if let Some(interface) = known_interface {
             interface
         } else if cache.skip_code.contains(&code_hash) {
-            return Ok(false);
+            return Ok(None);
         } else if let Some(interface) = InterfaceType::detect(code.as_ref()) {
             interface
         } else {
             cache.skip_code.insert(code_hash);
-            return Ok(false);
+            return Ok(None);
         };
 
         account.address = address.clone().into();
@@ -94,17 +94,18 @@ impl InterfaceParser<'_> {
             }
         };
 
-        if res.is_ok() {
+        Ok(if res.is_ok() {
             cache.known_interfaces.insert(code_hash, known_interface);
             batch.new_interfaces.insert(code_hash, KnownInterface {
                 code_hash,
                 interface: known_interface as u8,
                 is_broken: false,
             });
+            Some(known_interface)
         } else {
             cache.skip_code.insert(code_hash);
-        }
-        Ok(true)
+            None
+        })
     }
 
     fn handle_jetton_master(
@@ -112,7 +113,7 @@ impl InterfaceParser<'_> {
         address: &StdAddr,
         code_hash: &HashBytes,
         data_hash: &HashBytes,
-        account: Account,
+        account: &Account,
         batch: &mut InterfaceParserBatch,
     ) -> Result<()> {
         let last_transaction_lt = account.last_trans_lt;
@@ -142,7 +143,7 @@ impl InterfaceParser<'_> {
         address: &StdAddr,
         code_hash: &HashBytes,
         data_hash: &HashBytes,
-        account: Account,
+        account: &Account,
         batch: &mut InterfaceParserBatch,
     ) -> Result<()> {
         let last_transaction_lt = account.last_trans_lt;
@@ -444,16 +445,14 @@ mod test {
 
         let account = stub_account(code, data);
 
-        let output = executor.run_getter::<GetJettonDataOutput>(
-            account.clone(),
-            RunGetterParams::new("get_jetton_data"),
-        )?;
+        let output = executor
+            .run_getter::<GetJettonDataOutput>(&account, RunGetterParams::new("get_jetton_data"))?;
         println!("{output:#?}");
 
         let arg = OwnedCellSlice::new_allow_exotic(CellBuilder::build_from(STUB_ADDR).unwrap());
         let output = executor
             .run_getter::<GetWalletAddressOutput>(
-                account,
+                &account,
                 RunGetterParams::new("get_wallet_address").with_args(tuple![
                     slice arg,
                 ]),
@@ -479,7 +478,7 @@ mod test {
         let account = stub_account(code, data);
 
         let output = executor
-            .run_getter::<GetWalletDataOutput>(account, RunGetterParams::new("get_wallet_data"))?;
+            .run_getter::<GetWalletDataOutput>(&account, RunGetterParams::new("get_wallet_data"))?;
         println!("{output:#?}");
 
         Ok(())

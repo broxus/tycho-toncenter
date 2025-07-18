@@ -102,7 +102,10 @@ impl TonCenterRpcState {
 
     pub async fn sync_after_boot(&self, init_mc_block: &BlockId) -> Result<()> {
         let force_reindex = self.inner.config.force_reindex;
-        let reindex_completed_at = self.inner.tokens.get_reindex_completion_block_id().await?;
+        let reindex_completed_at = {
+            let reader = self.inner.tokens.read().await?;
+            reader.get_reindex_completion_block_id()?
+        };
         if let Some(prev_reindex_at) = &reindex_completed_at
             && force_reindex
         {
@@ -166,7 +169,7 @@ impl BlockSubscriber for TonCenterRpcBlockSubscriber {
         _: &'a BlockSubscriberContext,
         prepared: Self::Prepared,
     ) -> Self::HandleBlockFut<'a> {
-        Box::pin(async move { prepared.await })
+        Box::pin(prepared)
     }
 }
 
