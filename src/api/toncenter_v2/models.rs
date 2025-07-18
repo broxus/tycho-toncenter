@@ -8,7 +8,6 @@ use base64::prelude::{BASE64_STANDARD, Engine as _};
 use num_bigint::BigInt;
 use serde::ser::{SerializeSeq, SerializeStruct};
 use serde::{Deserialize, Serialize};
-use sha2::Digest;
 use tycho_block_util::message::ExtMsgRepr;
 use tycho_rpc::util::jrpc_extractor::{
     JSONRPC_FIELD, JSONRPC_VERSION, JrpcBehaviour, JrpcError, JrpcErrorResponse, JrpcOkResponse,
@@ -28,7 +27,7 @@ use tycho_types::num::Tokens;
 use tycho_types::prelude::*;
 use tycho_util::FastHashMap;
 
-use crate::util::tonlib_helpers::{StackParser, load_bytes_rope};
+use crate::util::tonlib_helpers::{StackParser, TokenDataAttribute, TokenDataAttributes};
 
 // === ID ===
 
@@ -475,9 +474,35 @@ pub struct JettonMasterData {
     pub mintable: bool,
     #[serde(with = "serde_helpers::option_tonlib_address")]
     pub admin_address: Option<StdAddr>,
+    #[serde(serialize_with = "JettonMasterData::serialize_jetton_conent")]
     pub jetton_content: TokenDataAttributes,
     #[serde(with = "Boc")]
     pub jetton_wallet_code: Cell,
+}
+
+impl JettonMasterData {
+    #[inline]
+    fn serialize_jetton_conent<S: serde::Serializer>(
+        value: &TokenDataAttributes,
+        serializer: S,
+    ) -> Result<S::Ok, S::Error> {
+        #[derive(Serialize)]
+        #[serde(tag = "type", rename_all = "lowercase")]
+        enum Helper<'a> {
+            Onchain {
+                data: &'a FastHashMap<TokenDataAttribute, String>,
+            },
+            Offchain {
+                data: &'a String,
+            },
+        }
+
+        match value {
+            TokenDataAttributes::Onchain { data } => Helper::Onchain { data },
+            TokenDataAttributes::Offchain { data } => Helper::Offchain { data },
+        }
+        .serialize(serializer)
+    }
 }
 
 impl GetTokenData for JettonMasterData {
@@ -517,122 +542,6 @@ impl GetTokenData for JettonWalletData {
             jetton: parser.pop_address()?,
             jetton_wallet_code: parser.pop_cell()?,
         })
-    }
-}
-
-#[derive(Serialize)]
-#[serde(rename_all = "lowercase")]
-pub enum TokenDataAttributes {
-    Onchain {
-        data: FastHashMap<TokenDataAttribute, String>,
-    },
-    Offchain {
-        data: String,
-    },
-}
-
-impl TokenDataAttributes {
-    pub fn parse_value(mut value: CellSlice<'_>) -> Result<Vec<u8>, tycho_types::error::Error> {
-        if value.is_data_empty() {
-            value = value.load_reference_as_slice()?;
-        }
-
-        match value.load_u8()? {
-            0x00 => load_bytes_rope(value, false),
-            0x01 => {
-                let dict = Dict::<u32, Cell>::load_from(&mut value)?;
-                let mut data = Vec::new();
-                for item in dict.values() {
-                    let item = item?;
-                    data.extend_from_slice(&load_bytes_rope(item.as_slice()?, false)?);
-                }
-                Ok(data)
-            }
-            _ => Err(tycho_types::error::Error::InvalidTag),
-        }
-    }
-}
-
-impl<'a> Load<'a> for TokenDataAttributes {
-    fn load_from(cs: &mut CellSlice<'a>) -> Result<Self, Error> {
-        match cs.load_u8()? {
-            0x00 => {
-                let mut data = FastHashMap::default();
-                let dict = Dict::<HashBytes, CellSlice<'_>>::load_from(cs)?;
-                for item in dict.iter() {
-                    let (name, value) = item?;
-                    let value = Self::parse_value(value)?;
-                    data.insert(
-                        TokenDataAttribute::resolve(&name),
-                        String::from_utf8_lossy(&value).into_owned(),
-                    );
-                }
-                Ok(Self::Onchain { data })
-            }
-            0x01 => {
-                let data = load_bytes_rope(*cs, false)?;
-                Ok(Self::Offchain {
-                    data: String::from_utf8_lossy(&data).into_owned(),
-                })
-            }
-            _ => Err(Error::InvalidTag),
-        }
-    }
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Hash)]
-pub enum TokenDataAttribute {
-    Known(&'static str),
-    Unknown(HashBytes),
-}
-
-impl TokenDataAttribute {
-    pub const KNOWN_ATTRIBUTES: [&str; 9] = [
-        "uri",
-        "name",
-        "description",
-        "image",
-        "image_data",
-        "symbol",
-        "decimals",
-        "amount_style",
-        "render_type",
-    ];
-
-    pub fn resolve(hash: &HashBytes) -> Self {
-        static KNOWN: OnceLock<FastHashMap<HashBytes, &'static str>> = OnceLock::new();
-        let known = KNOWN.get_or_init(|| {
-            let mut result = FastHashMap::with_capacity_and_hasher(
-                Self::KNOWN_ATTRIBUTES.len(),
-                Default::default(),
-            );
-            for name in Self::KNOWN_ATTRIBUTES {
-                let hash = sha2::Sha256::digest(name);
-                result.insert(HashBytes(hash.into()), name);
-            }
-            result
-        });
-        match known.get(hash).copied() {
-            Some(name) => Self::Known(name),
-            None => Self::Unknown(*hash),
-        }
-    }
-}
-
-impl std::fmt::Display for TokenDataAttribute {
-    #[inline]
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            Self::Known(s) => f.write_str(s),
-            Self::Unknown(s) => std::fmt::Display::fmt(s, f),
-        }
-    }
-}
-
-impl serde::Serialize for TokenDataAttribute {
-    #[inline]
-    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
-        serializer.collect_str(self)
     }
 }
 

@@ -1,5 +1,6 @@
-use anyhow::Result;
+use anyhow::{Context, Result};
 use once_cell::race::OnceBox;
+use serde::Serialize;
 use tycho_types::dict::RawKeys;
 use tycho_types::models::{Account, AccountState, StateInit, StdAddr};
 use tycho_types::prelude::*;
@@ -8,7 +9,7 @@ use tycho_vm::Stack;
 
 use super::models::{JettonMaster, JettonWallet, KnownInterface};
 use crate::util::tonlib_helpers::{
-    FromStack, RunGetterParams, SimpleExecutor, StackParser, compute_method_id,
+    FromStack, RunGetterParams, SimpleExecutor, StackParser, TokenDataAttributes, compute_method_id,
 };
 
 // === Parser ===
@@ -116,19 +117,37 @@ impl InterfaceParser<'_> {
         account: &Account,
         batch: &mut InterfaceParserBatch,
     ) -> Result<()> {
+        #[derive(Serialize)]
+        struct OffchainAttributes<'a> {
+            uri: &'a str,
+        }
+
         let last_transaction_lt = account.last_trans_lt;
         let output = self.executor.run_getter::<GetJettonDataOutput>(
             account,
             RunGetterParams::new(JettonMasterInterface::get_jetton_data()),
         )?;
 
+        let attributes = output
+            .jetton_content
+            .parse::<TokenDataAttributes>()
+            .context("invalid token data attributes")?;
+
+        let jetton_content = match attributes {
+            TokenDataAttributes::Onchain { data } if data.is_empty() => None,
+            TokenDataAttributes::Onchain { data } => Some(serde_json::to_string(&data)?),
+            TokenDataAttributes::Offchain { data } if data.is_empty() => None,
+            TokenDataAttributes::Offchain { data } => {
+                Some(serde_json::to_string(&OffchainAttributes { uri: &data })?)
+            }
+        };
+
         batch.jetton_masters.push(JettonMaster {
             address: address.clone(),
             total_supply: output.total_supply,
             mintable: output.mintable,
             admin_address: output.admin_address,
-            // TODO: Extract jetton content
-            jetton_content: None,
+            jetton_content,
             wallet_code_hash: *output.jetton_wallet_code.repr_hash(),
             last_transaction_lt,
             code_hash: *code_hash,

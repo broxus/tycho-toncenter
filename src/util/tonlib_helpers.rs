@@ -1,11 +1,15 @@
+use std::sync::OnceLock;
+
 use anyhow::{Result, anyhow};
 use num_bigint::{BigInt, BigUint};
+use sha2::Digest;
 use tycho_rpc::GenTimings;
 use tycho_types::models::{
     Account, AccountState, BlockchainConfigParams, CurrencyCollection, IntAddr, LibDescr, StdAddr,
 };
 use tycho_types::num::Tokens;
 use tycho_types::prelude::*;
+use tycho_util::FastHashMap;
 use tycho_vm::{
     BehaviourModifiers, GasParams, OwnedCellSlice, RcStackValue, SafeRc, SmcInfoTonV6, Stack,
     StackValueType, UnpackedConfig,
@@ -176,6 +180,122 @@ impl IntoStackItems for Vec<RcStackValue> {
     #[inline]
     fn into_stack_items(self) -> Vec<RcStackValue> {
         self
+    }
+}
+
+// === Jetton Attribute ===
+
+pub enum TokenDataAttributes {
+    Onchain {
+        data: FastHashMap<TokenDataAttribute, String>,
+    },
+    Offchain {
+        data: String,
+    },
+}
+
+impl TokenDataAttributes {
+    pub fn parse_value(mut value: CellSlice<'_>) -> Result<Vec<u8>, tycho_types::error::Error> {
+        if value.is_data_empty() {
+            value = value.load_reference_as_slice()?;
+        }
+
+        match value.load_u8()? {
+            0x00 => load_bytes_rope(value, false),
+            0x01 => {
+                let dict = Dict::<u32, Cell>::load_from(&mut value)?;
+                let mut data = Vec::new();
+                for item in dict.values() {
+                    let item = item?;
+                    data.extend_from_slice(&load_bytes_rope(item.as_slice()?, false)?);
+                }
+                Ok(data)
+            }
+            _ => Err(tycho_types::error::Error::InvalidTag),
+        }
+    }
+}
+
+impl<'a> Load<'a> for TokenDataAttributes {
+    fn load_from(cs: &mut CellSlice<'a>) -> Result<Self, tycho_types::error::Error> {
+        match cs.load_u8()? {
+            0x00 => {
+                let mut data = FastHashMap::default();
+                let dict = Dict::<HashBytes, CellSlice<'_>>::load_from(cs)?;
+                for item in dict.iter() {
+                    let (name, value) = item?;
+                    let value = Self::parse_value(value)?;
+                    data.insert(
+                        TokenDataAttribute::resolve(&name),
+                        String::from_utf8_lossy(&value).into_owned(),
+                    );
+                }
+                Ok(Self::Onchain { data })
+            }
+            0x01 => {
+                let data = load_bytes_rope(*cs, false)?;
+                Ok(Self::Offchain {
+                    data: String::from_utf8_lossy(&data).into_owned(),
+                })
+            }
+            _ => Err(tycho_types::error::Error::InvalidTag),
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub enum TokenDataAttribute {
+    Known(&'static str),
+    Unknown(HashBytes),
+}
+
+impl TokenDataAttribute {
+    pub const KNOWN_ATTRIBUTES: [&str; 9] = [
+        "uri",
+        "name",
+        "description",
+        "image",
+        "image_data",
+        "symbol",
+        "decimals",
+        "amount_style",
+        "render_type",
+    ];
+
+    pub fn resolve(hash: &HashBytes) -> Self {
+        static KNOWN: OnceLock<FastHashMap<HashBytes, &'static str>> = OnceLock::new();
+        let known = KNOWN.get_or_init(|| {
+            let mut result = FastHashMap::with_capacity_and_hasher(
+                Self::KNOWN_ATTRIBUTES.len(),
+                Default::default(),
+            );
+            for name in Self::KNOWN_ATTRIBUTES {
+                let hash = sha2::Sha256::digest(name);
+                result.insert(HashBytes(hash.into()), name);
+            }
+            result
+        });
+        match known.get(hash).copied() {
+            Some(name) => Self::Known(name),
+            None => Self::Unknown(*hash),
+        }
+    }
+}
+
+impl std::fmt::Display for TokenDataAttribute {
+    #[inline]
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Known(s) => f.write_str(s),
+            Self::Unknown(s) => std::fmt::Display::fmt(s, f),
+        }
+    }
+}
+
+impl serde::Serialize for TokenDataAttribute {
+    #[inline]
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        serializer.collect_str(self)
     }
 }
 
