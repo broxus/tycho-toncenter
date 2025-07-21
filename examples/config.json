@@ -1,0 +1,41 @@
+{
+  "public_ip": null,
+  "local_ip": "0.0.0.0",
+  "port": 30000,
+  "storage": {
+    "root_dir": "./db",
+    "rocksdb_lru_capacity": "20 GB"
+  },
+  "core_storage": {
+    "cells_cache_size": "4 GB"
+  },
+  "threads": {
+    "rayon_threads": 32,
+    "tokio_workers": 32
+  },
+  "logger_config": {
+    "outputs": [
+      {
+        "type": "Stderr"
+      }
+    ]
+  },
+  "metrics": {
+    "listen_addr": "127.0.0.1:10000"
+  },
+  "rpc": {
+    "listen_addr": "0.0.0.0:8000",
+    "storage": {
+      "type": "Full",
+      "gc": {
+        "tx_ttl": "7days",
+        "keep_tx_per_account": 10
+      },
+      "force_reindex": false,
+      "blacklist_path": null
+    },
+    "toncenter": {
+      "force_reindex": false
+    }
+  }
+}

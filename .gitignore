@@ -17,10 +17,10 @@ perf.data*
 /zerostate.json
 /zerostate.boc
 
-config.json
-global-config.json
-keys.json
-logger.json
+/config.json
+/global-config.json
+/keys.json
+/logger.json
 
 /db/
 /.temp/
