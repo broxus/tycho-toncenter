@@ -1008,7 +1008,6 @@ async fn get_jetton_wallets(
             }),
         })
         .map_err(ErrorResponse::internal)?
-        .into_iter()
         .map(|item| {
             let item = item?;
             Ok::<_, rusqlite::Error>(JettonWalletsResponseItem {
@@ -1017,8 +1016,8 @@ async fn get_jetton_wallets(
                 owner: item.owner,
                 jetton: item.jetton,
                 last_transaction_lt: item.last_transaction_lt,
-                code_hash: item.code_hash,
-                data_hash: item.data_hash,
+                code_hash: Some(item.code_hash),
+                data_hash: Some(item.data_hash),
             })
         })
         .collect::<Result<Vec<_>, _>>()

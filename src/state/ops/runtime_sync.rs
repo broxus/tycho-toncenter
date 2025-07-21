@@ -1,3 +1,4 @@
+use std::collections::hash_map;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::Instant;
@@ -8,13 +9,16 @@ use tokio::sync::Notify;
 use tycho_block_util::block::BlockStuff;
 use tycho_block_util::state::ShardStateStuff;
 use tycho_rpc::{GenTimings, RpcState};
-use tycho_types::models::{AccountStatus, BlockId, BlockIdShort, StdAddr};
+use tycho_types::models::{Account, AccountStatus, BlockId, BlockIdShort, StdAddr};
 use tycho_types::prelude::*;
 use tycho_util::{FastDashMap, FastHashMap};
+use tycho_vm::{OwnedCellSlice, SafeRc};
 
-use crate::state::parser::{InterfaceCache, InterfaceParser, InterfaceParserBatch};
+use crate::state::parser::{
+    GetWalletAddressOutput, InterfaceCache, InterfaceParser, JettonMasterInterface, ParserOutput,
+};
 use crate::state::repo::{TokensRepo, TokensRepoTransaction};
-use crate::util::tonlib_helpers::SimpleExecutor;
+use crate::util::tonlib_helpers::{RunGetterParams, SimpleExecutor};
 
 #[derive(Clone)]
 pub struct RuntimeSyncState {
@@ -174,9 +178,6 @@ impl Inner {
     ) -> Result<()> {
         let block_id = state.block_id().as_short_id();
 
-        let mut to_remove = Vec::new();
-        let mut batch = InterfaceParserBatch::default();
-
         let config = self.rpc_state.get_unpacked_blockchain_config();
         let parser = InterfaceParser {
             cache: &self.cache,
@@ -197,6 +198,12 @@ impl Inner {
         let mut total_errors = 0usize;
 
         let accounts = state.as_ref().accounts.load()?;
+
+        let mut to_remove = Vec::new();
+        let mut new_interfaces = FastHashMap::default();
+        let mut jetton_masters = Vec::new();
+        let mut jetton_wallets = Vec::new();
+        let mut unverified_jetton_wallets = Vec::new();
 
         // TODO: Split into batches (with at least N items in each).
         for (address, status) in parsed_block.updated_accounts {
@@ -222,18 +229,89 @@ impl Inner {
                 continue;
             };
 
-            match parser.handle_account(&address, &mut account, &mut batch) {
-                Ok(known_ty) => total_known_interfaces += known_ty.is_some() as usize,
+            let is_new = status == AccountUpdate::Deplyed;
+            match parser.handle_account(&address, &mut account) {
+                Ok(Some(ty)) => {
+                    total_known_interfaces += 1;
+
+                    match ty {
+                        ParserOutput::JettonMaster(info) => {
+                            if is_new {
+                                new_interfaces.insert(info.code_hash, info.as_known_interface());
+                            }
+                            jetton_masters.push(info)
+                        }
+                        ParserOutput::JettonWallet(info) if is_new => {
+                            unverified_jetton_wallets.push(info)
+                        }
+                        ParserOutput::JettonWallet(info) => {
+                            jetton_wallets.push(info);
+                        }
+                    }
+                }
+                Ok(None) => {}
                 Err(_) => total_errors += 1,
             }
         }
 
+        let mut with_unknown_master = 0usize;
+        let mut with_failed_getter = 0usize;
+        let mut with_mismatched_address = 0usize;
+        let mut master_accounts_cache = FastHashMap::<StdAddr, Account>::default();
+
+        // TODO: Split into batches (with at least N items in each).
+        'outer: for info in unverified_jetton_wallets {
+            if info.jetton.workchain != workchain {
+                with_unknown_master += 1;
+                continue;
+            }
+
+            let account = match master_accounts_cache.entry(info.jetton.clone()) {
+                hash_map::Entry::Occupied(entry) => entry.into_mut(),
+                hash_map::Entry::Vacant(entry) => 'addr: {
+                    if let Some((_, state)) = accounts.get(info.jetton.address)?
+                        && let Some(account) = state.load_account()?
+                    {
+                        break 'addr entry.insert(account);
+                    }
+
+                    with_unknown_master += 1;
+                    continue 'outer;
+                }
+            };
+
+            let owner = SafeRc::new_dyn_value(OwnedCellSlice::new_allow_exotic(
+                CellBuilder::build_from(&info.owner).unwrap(),
+            ));
+
+            let Ok(output) = parser.executor.run_getter::<GetWalletAddressOutput>(
+                account,
+                RunGetterParams::new(JettonMasterInterface::get_wallet_address())
+                    .with_args([owner]),
+            ) else {
+                // Getter failed.
+                with_failed_getter += 1;
+                continue;
+            };
+
+            if output.address != info.address {
+                // Computed address mismatch.
+                to_remove.push(info.address);
+                with_mismatched_address += 1;
+                continue;
+            }
+
+            new_interfaces.insert(info.code_hash, info.as_known_interface());
+            jetton_wallets.push(info);
+        }
+        drop(master_accounts_cache);
+
         // TODO: Wait somewhere else?
         let tx = TokensRepoTransaction::default();
         tx.remove_contracts(to_remove);
-        tx.insert_known_interfaces(batch.new_interfaces.into_values().collect());
-        tx.insert_jetton_masters(batch.jetton_masters);
-        tx.insert_jetton_wallets(batch.jetton_wallets);
+        tx.insert_known_interfaces(new_interfaces.into_values().collect());
+        tx.insert_jetton_masters(jetton_masters);
+        tx.insert_jetton_wallets(jetton_wallets);
         let affected_rows = self
             .tokens
             .write_blocking(tx)
@@ -244,6 +322,9 @@ impl Inner {
             total_accounts,
             total_known_interfaces,
             total_errors,
+            with_unknown_master,
+            with_failed_getter,
+            with_mismatched_address,
             affected_rows,
             elapsed = %humantime::format_duration(started_at.elapsed()),
             "inserted tokens info batch",

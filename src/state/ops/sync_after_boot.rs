@@ -13,8 +13,7 @@ use tycho_util::{FastDashMap, FastHashMap};
 use tycho_vm::{OwnedCellSlice, SafeRc};
 
 use crate::state::parser::{
-    GetWalletAddressOutput, InterfaceCache, InterfaceParser, InterfaceParserBatch, InterfaceType,
-    JettonMasterInterface,
+    GetWalletAddressOutput, InterfaceCache, InterfaceParser, JettonMasterInterface, ParserOutput,
 };
 use crate::state::repo::{TokensRepo, TokensRepoTransaction};
 use crate::util::tonlib_helpers::{RunGetterParams, SimpleExecutor};
@@ -228,7 +227,9 @@ impl InitialSyncContext<'_> {
             anyhow::bail!("non-standard workchains are not supported");
         };
 
-        let mut batch = InterfaceParserBatch::default();
+        let mut new_interfaces = FastHashMap::default();
+        let mut jetton_masters = Vec::new();
+        let mut jetton_wallets = Vec::new();
 
         let mut total_accounts = 0usize;
         let mut total_known_interfaces = 0usize;
@@ -242,15 +243,21 @@ impl InitialSyncContext<'_> {
             total_accounts += 1;
 
             let address = StdAddr::new(workchain, hash);
-            match self
-                .parser
-                .handle_account(&address, &mut account, &mut batch)
-            {
+            match self.parser.handle_account(&address, &mut account) {
                 Ok(Some(ty)) => {
                     total_known_interfaces += 1;
 
-                    if ty == InterfaceType::JettonMaster {
-                        self.jetton_master_accounts.insert(address, account);
+                    let interface = ty.as_known_interface();
+                    new_interfaces.insert(interface.code_hash, interface);
+
+                    match ty {
+                        ParserOutput::JettonMaster(info) => {
+                            self.jetton_master_accounts.insert(address, account);
+                            jetton_masters.push(info);
+                        }
+                        ParserOutput::JettonWallet(info) => {
+                            jetton_wallets.push(info);
+                        }
                     }
                 }
                 Ok(None) => {}
@@ -268,9 +275,9 @@ impl InitialSyncContext<'_> {
 
         // TODO: Wait somewhere else?
         let tx = TokensRepoTransaction::default();
-        tx.insert_known_interfaces(batch.new_interfaces.into_values().collect());
-        tx.insert_jetton_masters(batch.jetton_masters);
-        tx.insert_jetton_wallets(batch.jetton_wallets);
+        tx.insert_known_interfaces(new_interfaces.into_values().collect());
+        tx.insert_jetton_masters(jetton_masters);
+        tx.insert_jetton_wallets(jetton_wallets);
         let affected_rows = self
             .tokens
             .write_blocking(tx)

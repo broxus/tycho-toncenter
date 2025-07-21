@@ -32,8 +32,8 @@ CREATE TABLE IF NOT EXISTS jetton_wallets (
     owner               BLOB NOT NULL,
     jetton              BLOB NOT NULL,
     last_transaction_lt INTEGER NOT NULL,
-    code_hash           BLOB,
-    data_hash           BLOB
+    code_hash           BLOB NOT NULL,
+    data_hash           BLOB NOT NULL
 );
 CREATE INDEX IF NOT EXISTS jetton_wallets_index_1 ON jetton_wallets (owner);
 CREATE INDEX IF NOT EXISTS jetton_wallets_index_2 ON jetton_wallets (jetton);

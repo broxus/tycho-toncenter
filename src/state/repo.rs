@@ -727,8 +727,8 @@ mod tests {
             owner: dumb_addr(0x22),
             jetton: dumb_addr(0x11),
             last_transaction_lt: 123,
-            code_hash: Some(HashBytes::ZERO),
-            data_hash: Some(HashBytes::ZERO),
+            code_hash: HashBytes::ZERO,
+            data_hash: HashBytes::ZERO,
         });
         let affected_rows = repo
             .with_transaction(|tx| tx.insert_jetton_wallets(to_insert.to_vec()))

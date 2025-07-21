@@ -4,6 +4,7 @@ use num_bigint::BigUint;
 use tycho_types::cell::HashBytes;
 use tycho_types::models::StdAddr;
 
+use super::parser::InterfaceType;
 use super::util::*;
 
 // === Rows ===
@@ -17,6 +18,7 @@ row! {
     }
 }
 
+// TODO: Split into "new" and "updated" models?
 row! {
     #[derive(Debug, Clone, PartialEq, Eq)]
     pub struct JettonMaster {
@@ -32,6 +34,17 @@ row! {
     }
 }
 
+impl JettonMaster {
+    pub fn as_known_interface(&self) -> KnownInterface {
+        KnownInterface {
+            code_hash: self.code_hash,
+            interface: InterfaceType::JettonMaster as _,
+            is_broken: false,
+        }
+    }
+}
+
+// TODO: Split into "new" and "updated" models?
 row! {
     #[derive(Debug, Clone, PartialEq, Eq)]
     pub struct JettonWallet {
@@ -40,8 +53,18 @@ row! {
         pub owner: StdAddr,
         pub jetton: StdAddr,
         pub last_transaction_lt: u64,
-        pub code_hash: Option<HashBytes>,
-        pub data_hash: Option<HashBytes>,
+        pub code_hash: HashBytes,
+        pub data_hash: HashBytes,
+    }
+}
+
+impl JettonWallet {
+    pub fn as_known_interface(&self) -> KnownInterface {
+        KnownInterface {
+            code_hash: self.code_hash,
+            interface: InterfaceType::JettonWallet as _,
+            is_broken: false,
+        }
     }
 }
 

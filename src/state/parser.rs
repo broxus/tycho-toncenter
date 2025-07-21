@@ -4,7 +4,7 @@ use serde::Serialize;
 use tycho_types::dict::RawKeys;
 use tycho_types::models::{Account, AccountState, StateInit, StdAddr};
 use tycho_types::prelude::*;
-use tycho_util::{FastDashMap, FastDashSet, FastHashMap, FastHashSet};
+use tycho_util::{FastDashMap, FastDashSet, FastHashSet};
 use tycho_vm::Stack;
 
 use super::models::{JettonMaster, JettonWallet, KnownInterface};
@@ -35,11 +35,25 @@ impl InterfaceCache {
     }
 }
 
-#[derive(Default)]
-pub struct InterfaceParserBatch {
-    pub new_interfaces: FastHashMap<HashBytes, KnownInterface>,
-    pub jetton_masters: Vec<JettonMaster>,
-    pub jetton_wallets: Vec<JettonWallet>,
+pub enum ParserOutput {
+    JettonMaster(JettonMaster),
+    JettonWallet(JettonWallet),
+}
+
+impl ParserOutput {
+    pub fn interface_type(&self) -> InterfaceType {
+        match self {
+            Self::JettonMaster(_) => InterfaceType::JettonMaster,
+            Self::JettonWallet(_) => InterfaceType::JettonWallet,
+        }
+    }
+
+    pub fn as_known_interface(&self) -> KnownInterface {
+        match self {
+            Self::JettonMaster(info) => info.as_known_interface(),
+            Self::JettonWallet(info) => info.as_known_interface(),
+        }
+    }
 }
 
 pub struct InterfaceParser<'a> {
@@ -52,8 +66,7 @@ impl InterfaceParser<'_> {
         &self,
         address: &StdAddr,
         account: &mut Account,
-        batch: &mut InterfaceParserBatch,
-    ) -> Result<Option<InterfaceType>> {
+    ) -> Result<Option<ParserOutput>> {
         let AccountState::Active(StateInit {
             code: Some(code),
             data,
@@ -63,46 +76,57 @@ impl InterfaceParser<'_> {
             return Ok(None);
         };
 
-        if code.descriptor().is_library() {
-            *code = self.executor.resolve_library(code)?;
-        }
-
         let code_hash = *code.repr_hash();
         let data_hash = data.as_ref().map(|x| *x.repr_hash()).unwrap_or_default();
 
         let cache = self.cache;
 
-        let known_interface = cache.known_interfaces.get(&code_hash).map(|item| *item);
-        let known_interface = if let Some(interface) = known_interface {
-            interface
-        } else if cache.skip_code.contains(&code_hash) {
-            return Ok(None);
-        } else if let Some(interface) = InterfaceType::detect(code.as_ref()) {
-            interface
-        } else {
-            cache.skip_code.insert(code_hash);
-            return Ok(None);
+        let known_interface = 'interface: {
+            // Fast check in cache.
+            let known_interface = cache.known_interfaces.get(&code_hash).map(|item| *item);
+            if let Some(interface) = known_interface {
+                break 'interface interface;
+            } else if cache.skip_code.contains(&code_hash) {
+                // Skip known bad codes.
+                return Ok(None);
+            };
+
+            // Try resolve libraries.
+            if code.descriptor().is_library() {
+                *code = match self.executor.resolve_library(code) {
+                    Ok(resolved) => resolved,
+                    Err(_) => {
+                        cache.skip_code.insert(code_hash);
+                        return Ok(None);
+                    }
+                };
+            }
+
+            // Detect interface support by the code itself.
+            if let Some(interface) = InterfaceType::detect(code.as_ref()) {
+                interface
+            } else {
+                cache.skip_code.insert(code_hash);
+                return Ok(None);
+            }
         };
 
+        // Normalize state address.
+        // TODO: Check and remove since this might not be really needed.
         account.address = address.clone().into();
 
         let res = match known_interface {
-            InterfaceType::JettonMaster => {
-                self.handle_jetton_master(address, &code_hash, &data_hash, account, batch)
-            }
-            InterfaceType::JettonWallet => {
-                self.handle_jetton_wallet(address, &code_hash, &data_hash, account, batch)
-            }
+            InterfaceType::JettonMaster => self
+                .handle_jetton_master(address, &code_hash, &data_hash, account)
+                .map(ParserOutput::JettonMaster),
+            InterfaceType::JettonWallet => self
+                .handle_jetton_wallet(address, &code_hash, &data_hash, account)
+                .map(ParserOutput::JettonWallet),
         };
 
-        Ok(if res.is_ok() {
+        Ok(if let Ok(output) = res {
             cache.known_interfaces.insert(code_hash, known_interface);
-            batch.new_interfaces.insert(code_hash, KnownInterface {
-                code_hash,
-                interface: known_interface as u8,
-                is_broken: false,
-            });
-            Some(known_interface)
+            Some(output)
         } else {
             cache.skip_code.insert(code_hash);
             None
@@ -115,8 +139,7 @@ impl InterfaceParser<'_> {
         code_hash: &HashBytes,
         data_hash: &HashBytes,
         account: &Account,
-        batch: &mut InterfaceParserBatch,
-    ) -> Result<()> {
+    ) -> Result<JettonMaster> {
         #[derive(Serialize)]
         struct OffchainAttributes<'a> {
             uri: &'a str,
@@ -142,7 +165,7 @@ impl InterfaceParser<'_> {
             }
         };
 
-        batch.jetton_masters.push(JettonMaster {
+        Ok(JettonMaster {
             address: address.clone(),
             total_supply: output.total_supply,
             mintable: output.mintable,
@@ -152,9 +175,7 @@ impl InterfaceParser<'_> {
             last_transaction_lt,
             code_hash: *code_hash,
             data_hash: *data_hash,
-        });
-
-        Ok(())
+        })
     }
 
     fn handle_jetton_wallet(
@@ -163,25 +184,22 @@ impl InterfaceParser<'_> {
         code_hash: &HashBytes,
         data_hash: &HashBytes,
         account: &Account,
-        batch: &mut InterfaceParserBatch,
-    ) -> Result<()> {
+    ) -> Result<JettonWallet> {
         let last_transaction_lt = account.last_trans_lt;
         let output = self.executor.run_getter::<GetWalletDataOutput>(
             account,
             RunGetterParams::new(JettonWalletInterface::get_wallet_data()),
         )?;
 
-        batch.jetton_wallets.push(JettonWallet {
+        Ok(JettonWallet {
             address: address.clone(),
             balance: output.balance,
             owner: output.owner,
             jetton: output.jetton,
             last_transaction_lt,
-            code_hash: Some(*code_hash),
-            data_hash: Some(*data_hash),
-        });
-
-        Ok(())
+            code_hash: *code_hash,
+            data_hash: *data_hash,
+        })
     }
 }
 
