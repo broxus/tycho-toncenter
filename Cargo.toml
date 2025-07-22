@@ -1,5 +1,6 @@
 [package]
 name = "tycho-toncenter"
+description = "A partial TON Center API V2 and V3 implementation for Tycho-based networks"
 version = "0.1.1"
 edition = "2024"
 authors = ["Broxus Team"]
@@ -61,6 +62,36 @@ tycho-util = { git = "https://github.com/broxus/tycho.git", rev = "c8805e86e4f78
 
 [build-dependencies]
 anyhow = "1.0"
+
+[features]
+packaged = []
+
+[package.metadata.deb]
+features = ["packaged"]
+depends = ""
+section = "utility"
+assets = [
+    [
+        "target/release/tycho-toncenter",
+        "/usr/local/bin/tycho-toncenter",
+        "755",
+    ],
+    [
+        "README.md",
+        "/usr/share/doc/tycho-toncenter/README",
+        "644",
+    ],
+    [
+        "examples/config.json",
+        "/etc/tycho-toncenter/config.json",
+        "644",
+    ],
+]
+conf-files = ["/etc/tycho-toncenter/"]
+maintainer-scripts = "debian/"
+systemd-units = [
+    { unit-name = "tycho-toncenter", enable = true, start = false, stop-on-upgrade = false },
+]
 
 [workspace.lints.rust]
 future_incompatible = "warn"

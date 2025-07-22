@@ -1,0 +1,18 @@
+[Unit]
+Description=Tycho TON Center API
+After=network.target
+StartLimitIntervalSec=0
+
+[Service]
+Type=simple
+User=tycho
+LimitNOFILE=2048000
+WorkingDirectory=/var/tycho-toncenter
+ExecStart=/usr/local/bin/tycho-toncenter run \
+    --config /etc/tycho-toncenter/config.json \
+    --global-config /etc/tycho-toncenter/global-config.json \
+    --keys keys.json
+Environment=RUST_BACKTRACE=1,RUST_LIB_BACKTRACE=0
+
+[Install]
+WantedBy=multi-user.target

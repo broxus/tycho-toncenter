@@ -1,0 +1,27 @@
+name: Build .deb package
+
+on:
+  push:
+    branches: [master]
+
+jobs:
+  build-deb:
+    name: Build .deb package
+    runs-on: ubuntu-22.04
+    steps:
+      - name: Checkout sources
+        uses: actions/checkout@v4
+
+      - name: Install stable toolchain
+        uses: ./.github/actions/init
+
+      - name: Install `cargo-deb`
+        run: cargo install cargo-deb
+
+      - name: Run cargo deb
+        run: cargo deb --output tycho-toncenter.deb
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: tycho-toncenter.deb
+          path: tycho-toncenter.deb

@@ -1,0 +1,14 @@
+#!/bin/sh
+set -e
+
+if [ "$1" = "configure" ] || [ "$1" = "abort-upgrade" ] || [ "$1" = "abort-deconfigure" ] || [ "$1" = "abort-remove" ]; then
+  useradd tycho -r || echo "User already exists."
+  path="/var/tycho-toncenter"
+
+  mkdir -p $path
+
+  chown tycho:tycho -R $path
+  chmod 770 -R $path
+  chmod g+s -R $path
+fi
+#DEBHELPER#

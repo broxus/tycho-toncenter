@@ -1,0 +1,7 @@
+#!/bin/sh
+set -e
+
+deluser tycho || echo "User is currently used by process"
+groupdel tycho || echo "Group is currently used"
+
+#DEBHELPER#
