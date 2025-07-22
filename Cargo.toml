@@ -1,11 +1,16 @@
 [package]
 name = "tycho-toncenter"
-version = "0.1.0"
+version = "0.1.1"
 edition = "2024"
 authors = ["Broxus Team"]
 rust-version = "1.88.0"
-repository = "https://github.com/broxus/tycho-"
+repository = "https://github.com/broxus/tycho-toncenter"
 license = "MIT OR Apache-2.0"
+
+[profile.release]
+lto = "thin"
+codegen-units = 1
+panic = "abort"
 
 [dependencies]
 anyhow = "1.0"

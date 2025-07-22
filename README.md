@@ -42,7 +42,7 @@ Base route `/toncenter/v3`
 
 ### Docker images
 
-Docker images are available on Docker Hub.
+Docker images are available on [ghcr.io](https://github.com/broxus/tycho-toncenter/pkgs/container/tycho-toncenter).
 
 ```bash
 # Create persistent folder
@@ -50,7 +50,7 @@ mkdir -p data
 
 alias tycho-toncenter='docker run --userns=keep-id \
     --mount type=bind,src=./data,dst=/tycho,z \
-    rexagon/tycho-toncenter:latest'
+    ghcr.io/broxus/tycho-toncenter:latest'
 
 # Generate config.
 # NOTE: Paths are relative to the `./data` folder.
