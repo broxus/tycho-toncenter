@@ -1146,6 +1146,8 @@ mod option_tonlib_address_list {
 }
 
 mod tonlib_address_list {
+    use tycho_types::models::StdAddrFormat;
+
     use super::*;
 
     pub fn deserialize<'de, D>(deserializer: D) -> Result<Vec<StdAddr>, D::Error>
@@ -1168,6 +1170,15 @@ mod tonlib_address_list {
 
             fn expecting(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
                 f.write_str("address list of at most 1024 items")
+            }
+
+            fn visit_str<E>(self, v: &str) -> Result<Self::Value, E>
+            where
+                E: serde::de::Error,
+            {
+                StdAddr::from_str_ext(v, StdAddrFormat::any())
+                    .map(|(addr, _)| vec![addr])
+                    .map_err(E::custom)
             }
 
             fn visit_seq<A>(self, mut seq: A) -> Result<Self::Value, A::Error>
