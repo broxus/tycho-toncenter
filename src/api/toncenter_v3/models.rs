@@ -1176,9 +1176,13 @@ mod tonlib_address_list {
             where
                 E: serde::de::Error,
             {
-                StdAddr::from_str_ext(v, StdAddrFormat::any())
-                    .map(|(addr, _)| vec![addr])
-                    .map_err(E::custom)
+                let mut result = Vec::new();
+                for v in v.split(',') {
+                    let (addr, _) =
+                        StdAddr::from_str_ext(v, StdAddrFormat::any()).map_err(E::custom)?;
+                    result.push(addr);
+                }
+                Ok(result)
             }
 
             fn visit_seq<A>(self, mut seq: A) -> Result<Self::Value, A::Error>
@@ -1197,5 +1201,16 @@ mod tonlib_address_list {
         }
 
         deserializer.deserialize_seq(ListVisitor)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn parse_wallets_request() {
+        let parsed: JettonWalletsRequest = serde_urlencoded::from_str("owner_address=0:21fc9cf9b5f7ebfb16ac172a70b052dedd7bdd60199c3632eb336192f7d9f9b3,0:56a4f5a8a42fd45d0beedb0fa08ebb98a9a55720dccb9986e4a62e79d3f993b4").unwrap();
+        println!("{parsed:#?}");
     }
 }

@@ -52,6 +52,7 @@ tycho-vm = "0.2.0"
 [dev-dependencies]
 tycho-util = { version = "0.2.11", features = ["cli", "test"] }
 tycho-storage = { version = "0.2.11", features = ["test"] }
+serde_urlencoded = "0.7.1"
 
 [patch.crates-io]
 tycho-block-util = { git = "https://github.com/broxus/tycho.git", rev = "c8805e86e4f787744ef08705797cebc9ce840afe" }

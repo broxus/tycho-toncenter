@@ -3239,6 +3239,7 @@ dependencies = [
  "scopeguard",
  "serde",
  "serde_json",
+ "serde_urlencoded",
  "sha2",
  "thiserror 2.0.12",
  "tikv-jemallocator",
