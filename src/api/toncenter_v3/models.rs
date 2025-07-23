@@ -338,7 +338,9 @@ pub struct Block {
     pub prev_key_block_seqno: u32,
     pub vert_seqno: u32,
     pub master_ref_seqno: u32,
+    #[serde(with = "serde_helpers::tonlib_hash")]
     pub rand_seed: HashBytes,
+    #[serde(with = "serde_helpers::tonlib_hash")]
     pub created_by: HashBytes,
     pub tx_count: u32,
     pub masterchain_block_ref: BlockRef,
