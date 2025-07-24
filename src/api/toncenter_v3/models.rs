@@ -519,6 +519,16 @@ impl From<BlockIdShort> for BlockRef {
 #[repr(transparent)]
 pub struct ShardPrefix(pub u64);
 
+impl ShardPrefix {
+    pub fn validate(self) -> anyhow::Result<u64> {
+        if ShardIdent::new(0, self.0).is_some() {
+            Ok(self.0)
+        } else {
+            Err(anyhow::anyhow!("invalid shard prefix"))
+        }
+    }
+}
+
 impl Serialize for ShardPrefix {
     #[inline]
     fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {

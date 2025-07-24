@@ -82,7 +82,7 @@ async fn get_blocks(
     const MAX_LIMIT: usize = 1000;
 
     struct Filters {
-        by_block: Option<BlockIdShort>,
+        by_block: ByBlock,
         by_mc_seqno: Option<u32>,
         start_utime: Option<u32>,
         end_utime: Option<u32>,
@@ -124,7 +124,12 @@ async fn get_blocks(
         type Error = anyhow::Error;
 
         fn try_from(q: BlocksRequest) -> Result<Self, Self::Error> {
-            let by_block = if q.workchain.is_some() || q.shard.is_some() || q.seqno.is_some() {
+            let by_block = if ByBlock::needs_exact(
+                q.mc_seqno.is_some(),
+                q.workchain.is_some(),
+                q.shard.is_some(),
+                q.seqno.is_some(),
+            ) {
                 let (Some(workchain), Some(ShardPrefix(prefix)), Some(seqno)) =
                     (q.workchain, q.shard, q.seqno)
                 else {
@@ -133,9 +138,13 @@ async fn get_blocks(
                 let Some(shard) = ShardIdent::new(workchain, prefix) else {
                     anyhow::bail!("invalid shard prefix");
                 };
-                Some(BlockIdShort { shard, seqno })
+                ByBlock::Exact(BlockIdShort { shard, seqno })
             } else {
-                None
+                ByBlock::Parts {
+                    workchain: q.workchain,
+                    shard: q.shard.map(ShardPrefix::validate).transpose()?,
+                    seqno: q.seqno,
+                }
             };
 
             anyhow::ensure!(
@@ -168,7 +177,7 @@ async fn get_blocks(
         let mut blocks = Vec::new();
 
         'blocks: {
-            if let Some(block_id) = query.by_block {
+            if let ByBlock::Exact(block_id) = query.by_block {
                 let Some((block_id, mc_seqno, info)) =
                     state.get_brief_block_info(&block_id, Some(&snapshot))?
                 else {
@@ -200,6 +209,16 @@ async fn get_blocks(
                 for block_id in block_ids {
                     if i >= range_to {
                         break;
+                    }
+
+                    if let ByBlock::Parts {
+                        workchain,
+                        shard,
+                        seqno,
+                    } = &query.by_block
+                        && ByBlock::should_skip(&block_id.as_short_id(), *workchain, *shard, *seqno)
+                    {
+                        continue;
                     }
 
                     let Some((block_id, _, info)) =
@@ -243,7 +262,7 @@ async fn get_transactions(
     const MAX_LIMIT: usize = 1000;
 
     struct Filters {
-        by_block: Option<BlockIdShort>,
+        by_block: ByBlock,
         by_mc_seqno: Option<u32>,
         by_hash: Option<HashBytes>,
         lt: Option<u64>,
@@ -258,11 +277,24 @@ async fn get_transactions(
 
     impl Filters {
         fn contains(&self, info: &TransactionInfo) -> bool {
-            if let Some(block_id) = &self.by_block {
-                if info.block_id.as_short_id() != *block_id {
-                    return false;
+            let tx_block_id = info.block_id.as_short_id();
+            match &self.by_block {
+                ByBlock::Exact(block_id) => {
+                    if tx_block_id != *block_id {
+                        return false;
+                    }
+                }
+                ByBlock::Parts {
+                    workchain,
+                    shard,
+                    seqno,
+                } => {
+                    if ByBlock::should_skip(&tx_block_id, *workchain, *shard, *seqno) {
+                        return false;
+                    }
                 }
             }
+
             if let Some(mc_seqno) = self.by_mc_seqno {
                 if info.mc_seqno != mc_seqno {
                     return false;
@@ -302,7 +334,12 @@ async fn get_transactions(
                 "filter by `start_utime` or `end_utime` is not supported yet"
             );
 
-            let by_block = if q.workchain.is_some() || q.shard.is_some() || q.seqno.is_some() {
+            let by_block = if ByBlock::needs_exact(
+                q.mc_seqno.is_some(),
+                q.workchain.is_some(),
+                q.shard.is_some(),
+                q.seqno.is_some(),
+            ) {
                 let (Some(workchain), Some(ShardPrefix(prefix)), Some(seqno)) =
                     (q.workchain, q.shard, q.seqno)
                 else {
@@ -311,9 +348,13 @@ async fn get_transactions(
                 let Some(shard) = ShardIdent::new(workchain, prefix) else {
                     anyhow::bail!("invalid shard prefix");
                 };
-                Some(BlockIdShort { shard, seqno })
+                ByBlock::Exact(BlockIdShort { shard, seqno })
             } else {
-                None
+                ByBlock::Parts {
+                    workchain: q.workchain,
+                    shard: q.shard.map(ShardPrefix::validate).transpose()?,
+                    seqno: q.seqno,
+                }
             };
 
             anyhow::ensure!(
@@ -419,7 +460,7 @@ async fn get_transactions(
                 Ok::<_, anyhow::Error>(())
             })()
             .map_err(ErrorResponse::internal)?;
-        } else if let Some(block_id) = &query.by_block {
+        } else if let ByBlock::Exact(block_id) = &query.by_block {
             // Searching for all transactions whithin a single block.
             let Some(iter) =
                 state.get_block_transactions(block_id, query.reverse, None, Some(snapshot))?
@@ -1027,6 +1068,43 @@ async fn get_jetton_wallets(
 }
 
 // === Helpers ===
+
+enum ByBlock {
+    Exact(BlockIdShort),
+    Parts {
+        workchain: Option<i32>,
+        shard: Option<u64>,
+        seqno: Option<u32>,
+    },
+}
+
+impl ByBlock {
+    #[inline]
+    fn needs_exact(
+        has_mc_seqno: bool,
+        has_workchain: bool,
+        has_shard: bool,
+        has_seqno: bool,
+    ) -> bool {
+        if has_mc_seqno {
+            has_workchain && has_shard && has_seqno
+        } else {
+            has_workchain || has_shard || has_seqno
+        }
+    }
+
+    #[inline]
+    fn should_skip(
+        block_id: &BlockIdShort,
+        workchain: Option<i32>,
+        shard: Option<u64>,
+        seqno: Option<u32>,
+    ) -> bool {
+        matches!(workchain, Some(x) if x != block_id.shard.workchain())
+            || matches!(shard, Some(x) if x != block_id.shard.prefix())
+            || matches!(seqno, Some(x) if x != block_id.seqno)
+    }
+}
 
 fn ok_no_transactions() -> Response {
     static BYTES: OnceLock<Vec<u8>> = OnceLock::new();
