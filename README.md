@@ -1,4 +1,4 @@
-## TON Center API for Tycho
+## TON Center Compatible API for Tycho
 
 A partial TON Center API V2 and V3 implementation for Tycho-based networks. Runs as a single self-contained light node.
 
