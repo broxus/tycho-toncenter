@@ -96,12 +96,10 @@ impl TransactionsRequest {
         #[derive(Deserialize)]
         #[serde(transparent)]
         #[repr(transparent)]
-        struct Item(#[serde(with = "serde_helpers::tonlib_address")] StdAddr);
+        struct Items(#[serde(with = "tonlib_address_list")] Vec<StdAddr>);
 
-        Ok(Vec::<_>::deserialize(deserializer)?
-            .into_iter()
-            .map(|Item(addr)| addr)
-            .collect())
+        let Items(items) = <_>::deserialize(deserializer)?;
+        Ok(FastHashSet::from_iter(items))
     }
 }
 
