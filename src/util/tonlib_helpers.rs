@@ -118,13 +118,17 @@ impl StackParser {
     }
 
     pub fn pop_cell_or_slice(&mut self) -> Result<OwnedCellSlice> {
+        // TODO: Move aliases into VM.
+        const CELL_TY: u8 = StackValueType::Cell as u8;
+        const SLICE_TY: u8 = StackValueType::Slice as u8;
+
         let item = self.pop_item()?;
-        Ok(match item.ty() {
-            StackValueType::Cell => {
+        Ok(match item.raw_ty() {
+            CELL_TY => {
                 let cell = item.into_cell()?;
                 OwnedCellSlice::new_allow_exotic(SafeRc::unwrap_or_clone(cell))
             }
-            StackValueType::Slice => SafeRc::unwrap_or_clone(item.into_cell_slice()?),
+            SLICE_TY => SafeRc::unwrap_or_clone(item.into_cell_slice()?),
             ty => anyhow::bail!("expected cell or slice, got {ty:?}"),
         })
     }
@@ -374,12 +378,12 @@ impl SimpleExecutor {
             )));
         }
 
-        if let Some(require_fields) = R::field_count_hint() {
-            if stack.items.len() < require_fields {
-                return Err(ExecutorError::FailedToParse(anyhow!(
-                    "too few stack arguments"
-                )));
-            }
+        if let Some(require_fields) = R::field_count_hint()
+            && stack.items.len() < require_fields
+        {
+            return Err(ExecutorError::FailedToParse(anyhow!(
+                "too few stack arguments"
+            )));
         }
 
         R::from_stack(SafeRc::unwrap_or_clone(stack)).map_err(ExecutorError::FailedToParse)

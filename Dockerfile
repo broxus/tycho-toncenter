@@ -1,4 +1,4 @@
-FROM rust:1.88 AS build
+FROM rust:1.90-bookworm AS build
 
 # Install dependencies for the node and LLVM
 RUN wget -O - https://apt.llvm.org/llvm-snapshot.gpg.key | apt-key add - && \

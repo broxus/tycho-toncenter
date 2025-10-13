@@ -106,10 +106,10 @@ impl SqliteDispatcher {
             tx.send(f(conn)).ok();
         });
 
-        if self.tx.send(query).await.is_ok() {
-            if let Ok(res) = rx.await {
-                return res;
-            }
+        if self.tx.send(query).await.is_ok()
+            && let Ok(res) = rx.await
+        {
+            return res;
         }
 
         unreachable!("receiver thread cannot be dropped while `self.tx` is still alive");
@@ -125,10 +125,10 @@ impl SqliteDispatcher {
             tx.send(f(conn)).ok();
         });
 
-        if self.tx.blocking_send(query).is_ok() {
-            if let Ok(res) = rx.blocking_recv() {
-                return res;
-            }
+        if self.tx.blocking_send(query).is_ok()
+            && let Ok(res) = rx.blocking_recv()
+        {
+            return res;
         }
 
         unreachable!("receiver thread cannot be dropped while `self.tx` is still alive");

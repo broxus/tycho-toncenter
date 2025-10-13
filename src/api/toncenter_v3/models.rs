@@ -1099,10 +1099,10 @@ impl AddressBook {
         for tx in transactions {
             self.items.insert(tx.account.clone());
 
-            if let Some(msg) = &tx.in_msg {
-                if let Some(src) = msg.source.clone() {
-                    self.items.insert(src);
-                }
+            if let Some(msg) = &tx.in_msg
+                && let Some(src) = msg.source.clone()
+            {
+                self.items.insert(src);
             }
 
             for msg in &tx.out_msgs {

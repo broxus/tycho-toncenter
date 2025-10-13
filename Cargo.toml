@@ -1,10 +1,10 @@
 [package]
 name = "tycho-toncenter"
 description = "A partial TON Center API V2 and V3 implementation for Tycho-based networks"
-version = "0.1.3"
+version = "0.2.0"
 edition = "2024"
 authors = ["Broxus Team"]
-rust-version = "1.88.0"
+rust-version = "1.89.0"
 repository = "https://github.com/broxus/tycho-toncenter"
 license = "MIT OR Apache-2.0"
 
@@ -35,31 +35,31 @@ thiserror = "2.0"
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "sync", "time"] }
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
-tycho-types = { version = "0.2.0", features = ["sync", "base64", "rayon", "models", "rand9"] }
+tycho-types = { version = "0.3.0", features = ["sync", "base64", "rayon", "models", "rand9"] }
 
 tikv-jemallocator = { version = "0.6.0", features = [
     "unprefixed_malloc_on_supported_platforms",
     "background_threads",
 ] }
 
-tycho-block-util = "0.2.11"
-tycho-core = "0.2.11"
-tycho-rpc = "0.2.11"
-tycho-storage = "0.2.11"
-tycho-util = { version = "0.2.11", features = ["cli"] }
-tycho-vm = "0.2.0"
+tycho-block-util = "0.3.2"
+tycho-core = "0.3.2"
+tycho-rpc = "0.3.2"
+tycho-storage = "0.3.2"
+tycho-util = { version = "0.3.2", features = ["cli"] }
+tycho-vm = "0.3.0"
 
 [dev-dependencies]
-tycho-util = { version = "0.2.11", features = ["cli", "test"] }
-tycho-storage = { version = "0.2.11", features = ["test"] }
+tycho-util = { version = "0.3.2", features = ["cli", "test"] }
+tycho-storage = { version = "0.3.2", features = ["test"] }
 serde_urlencoded = "0.7.1"
 
 [patch.crates-io]
-tycho-block-util = { git = "https://github.com/broxus/tycho.git", rev = "c8805e86e4f787744ef08705797cebc9ce840afe" }
-tycho-core = { git = "https://github.com/broxus/tycho.git", rev = "c8805e86e4f787744ef08705797cebc9ce840afe" }
-tycho-rpc = { git = "https://github.com/broxus/tycho.git", rev = "c8805e86e4f787744ef08705797cebc9ce840afe" }
-tycho-storage = { git = "https://github.com/broxus/tycho.git", rev = "c8805e86e4f787744ef08705797cebc9ce840afe" }
-tycho-util = { git = "https://github.com/broxus/tycho.git", rev = "c8805e86e4f787744ef08705797cebc9ce840afe" }
+tycho-block-util = { git = "https://github.com/broxus/tycho.git", rev = "00e59baa0157236df06227c59aac640b0f150ce8" }
+tycho-core = { git = "https://github.com/broxus/tycho.git", rev = "00e59baa0157236df06227c59aac640b0f150ce8" }
+tycho-rpc = { git = "https://github.com/broxus/tycho.git", rev = "00e59baa0157236df06227c59aac640b0f150ce8" }
+tycho-storage = { git = "https://github.com/broxus/tycho.git", rev = "00e59baa0157236df06227c59aac640b0f150ce8" }
+tycho-util = { git = "https://github.com/broxus/tycho.git", rev = "00e59baa0157236df06227c59aac640b0f150ce8" }
 
 [build-dependencies]
 anyhow = "1.0"

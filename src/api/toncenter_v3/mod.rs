@@ -95,20 +95,20 @@ async fn get_blocks(
 
     impl Filters {
         fn contains(&self, info: &BriefBlockInfo) -> bool {
-            if let Some(start_utime) = self.start_utime {
-                if info.gen_utime < start_utime {
-                    return false;
-                }
+            if let Some(start_utime) = self.start_utime
+                && info.gen_utime < start_utime
+            {
+                return false;
             }
-            if let Some(end_utime) = self.end_utime {
-                if info.gen_utime > end_utime {
-                    return false;
-                }
+            if let Some(end_utime) = self.end_utime
+                && info.gen_utime > end_utime
+            {
+                return false;
             }
-            if let Some(start_lt) = self.start_lt {
-                if info.start_lt < start_lt {
-                    return false;
-                }
+            if let Some(start_lt) = self.start_lt
+                && info.start_lt < start_lt
+            {
+                return false;
             }
             if let Some(end_lt) = self.end_lt {
                 // NOTE: Only `start_lt` is used for this filter.
@@ -295,25 +295,25 @@ async fn get_transactions(
                 }
             }
 
-            if let Some(mc_seqno) = self.by_mc_seqno {
-                if info.mc_seqno != mc_seqno {
-                    return false;
-                }
+            if let Some(mc_seqno) = self.by_mc_seqno
+                && info.mc_seqno != mc_seqno
+            {
+                return false;
             }
-            if let Some(lt) = self.lt {
-                if info.lt != lt {
-                    return false;
-                }
+            if let Some(lt) = self.lt
+                && info.lt != lt
+            {
+                return false;
             }
-            if let Some(start_lt) = self.start_lt {
-                if info.lt < start_lt {
-                    return false;
-                }
+            if let Some(start_lt) = self.start_lt
+                && info.lt < start_lt
+            {
+                return false;
             }
-            if let Some(end_lt) = self.end_lt {
-                if info.lt > end_lt {
-                    return false;
-                }
+            if let Some(end_lt) = self.end_lt
+                && info.lt > end_lt
+            {
+                return false;
             }
             if !self.account.is_empty() && !self.account.contains(&info.account) {
                 return false;
@@ -746,15 +746,15 @@ async fn get_adjacent_transactions(
     let mut out_msg_hashes = Vec::new();
 
     (|| {
-        if query.direction.is_none() || matches!(query.direction, Some(MessageDirection::In)) {
-            if let Some(in_msg) = tx.in_msg {
-                let mut cs = in_msg.as_slice()?;
-                if MsgType::load_from(&mut cs)? == MsgType::Int {
-                    let info = IntMsgInfo::load_from(&mut cs)?;
-                    if let IntAddr::Std(addr) = info.src {
-                        in_msg_source = Some((addr, info.created_lt));
-                        tx_count += 1;
-                    }
+        if (query.direction.is_none() || matches!(query.direction, Some(MessageDirection::In)))
+            && let Some(in_msg) = tx.in_msg
+        {
+            let mut cs = in_msg.as_slice()?;
+            if MsgType::load_from(&mut cs)? == MsgType::Int {
+                let info = IntMsgInfo::load_from(&mut cs)?;
+                if let IntAddr::Std(addr) = info.src {
+                    in_msg_source = Some((addr, info.created_lt));
+                    tx_count += 1;
                 }
             }
         }

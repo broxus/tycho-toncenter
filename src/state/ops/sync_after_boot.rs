@@ -306,7 +306,7 @@ async fn load_virtual_shards(
     let depth = rpc_state.config().shard_split_depth;
 
     let mc_state = states
-        .load_state(mc_block_id)
+        .load_state(0, mc_block_id)
         .await
         .context("failed to load initial mc state after boot")?;
 
@@ -340,7 +340,7 @@ async fn load_virtual_shards(
 
     for block_id in shard_block_ids {
         let sc_state = states
-            .load_state(&block_id)
+            .load_state(0, &block_id)
             .await
             .context("failed to load initial sc state after boot")?;
         split_full_state(sc_state)?;
@@ -369,10 +369,10 @@ fn split_shard(
         builder: &mut CellBuilder,
     ) -> Result<()> {
         let (left_shard_ident, right_shard_ident) = 'split: {
-            if depth > 0 {
-                if let Some((left, right)) = shard.split() {
-                    break 'split (left, right);
-                }
+            if depth > 0
+                && let Some((left, right)) = shard.split()
+            {
+                break 'split (left, right);
             }
             shards.insert(*shard, accounts.clone());
             return Ok(());

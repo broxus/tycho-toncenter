@@ -1091,7 +1091,6 @@ impl RunGetMethodResponse {
         S: serde::Serializer,
     {
         use serde::ser::Error;
-        use tycho_vm::StackValueType;
 
         let is_limit_ok = STACK_ITEMS_LIMIT.with(|limit| {
             let current_limit = limit.get();
@@ -1162,19 +1161,24 @@ impl RunGetMethodResponse {
             bytes: &'a Cell,
         }
 
-        match value.ty() {
-            StackValueType::Null => ("list", [(); 0]).serialize(serializer),
-            StackValueType::Int => match value.as_int() {
+        // TODO: Define numeric enum aliases in VM.
+        match value.raw_ty() {
+            // StackValueType::Null
+            0 => ("list", [(); 0]).serialize(serializer),
+            // StackValueType::Int
+            1 => match value.as_int() {
                 Some(int) => ("num", Num(int)).serialize(serializer),
                 None => ("num", "(null)").serialize(serializer),
             },
-            StackValueType::Cell => {
+            // StackValueType::Cell
+            2 => {
                 let cell = value
                     .as_cell()
                     .ok_or_else(|| Error::custom("invalid cell"))?;
                 ("cell", CellBytes { bytes: cell }).serialize(serializer)
             }
-            StackValueType::Slice => {
+            // StackValueType::Slice
+            3 => {
                 let slice = value
                     .as_cell_slice()
                     .ok_or_else(|| Error::custom("invalid slice"))?;
@@ -1189,7 +1193,8 @@ impl RunGetMethodResponse {
 
                 ("cell", CellBytes { bytes: cell }).serialize(serializer)
             }
-            StackValueType::Tuple => match value.as_list() {
+            // StackValueType::Tuple
+            6 => match value.as_list() {
                 Some((head, tail)) => ("list", List(head, tail)).serialize(serializer),
                 None => {
                     let tuple = value

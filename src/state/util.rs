@@ -124,14 +124,14 @@ pub fn add_opt_array_filter<'a, T>(
     field: &str,
     items: Option<&'a [T]>,
 ) -> &'a [T] {
-    if let Some(items) = items {
-        if let Some(new_filter) = array_filter_params(field, items.len()) {
-            match filter {
-                None => *filter = Some(new_filter),
-                Some(filter) => write!(filter, " AND {new_filter}").unwrap(),
-            }
-            return items;
+    if let Some(items) = items
+        && let Some(new_filter) = array_filter_params(field, items.len())
+    {
+        match filter {
+            None => *filter = Some(new_filter),
+            Some(filter) => write!(filter, " AND {new_filter}").unwrap(),
         }
+        return items;
     }
     &[]
 }
