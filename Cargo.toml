@@ -1,7 +1,7 @@
 [package]
 name = "tycho-toncenter"
 description = "A partial TON Center API V2 and V3 implementation for Tycho-based networks"
-version = "0.2.0"
+version = "0.2.1"
 edition = "2024"
 authors = ["Broxus Team"]
 rust-version = "1.89.0"
@@ -55,11 +55,11 @@ tycho-storage = { version = "0.3.2", features = ["test"] }
 serde_urlencoded = "0.7.1"
 
 [patch.crates-io]
-tycho-block-util = { git = "https://github.com/broxus/tycho.git", rev = "00e59baa0157236df06227c59aac640b0f150ce8" }
-tycho-core = { git = "https://github.com/broxus/tycho.git", rev = "00e59baa0157236df06227c59aac640b0f150ce8" }
-tycho-rpc = { git = "https://github.com/broxus/tycho.git", rev = "00e59baa0157236df06227c59aac640b0f150ce8" }
-tycho-storage = { git = "https://github.com/broxus/tycho.git", rev = "00e59baa0157236df06227c59aac640b0f150ce8" }
-tycho-util = { git = "https://github.com/broxus/tycho.git", rev = "00e59baa0157236df06227c59aac640b0f150ce8" }
+tycho-block-util = { git = "https://github.com/broxus/tycho.git", rev = "f64885838f5073208908f978b901f6b720823f8b" }
+tycho-core = { git = "https://github.com/broxus/tycho.git", rev = "f64885838f5073208908f978b901f6b720823f8b" }
+tycho-rpc = { git = "https://github.com/broxus/tycho.git", rev = "f64885838f5073208908f978b901f6b720823f8b" }
+tycho-storage = { git = "https://github.com/broxus/tycho.git", rev = "f64885838f5073208908f978b901f6b720823f8b" }
+tycho-util = { git = "https://github.com/broxus/tycho.git", rev = "f64885838f5073208908f978b901f6b720823f8b" }
 
 [build-dependencies]
 anyhow = "1.0"
