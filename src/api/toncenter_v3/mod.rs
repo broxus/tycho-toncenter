@@ -876,7 +876,7 @@ async fn get_transactions_by_message(
 
         // Try to handle destination transaction first.
         let both_directions = query.direction.is_none();
-        if both_directions || matches!(query.direction, Some(MessageDirection::Out)) {
+        if both_directions || matches!(query.direction, Some(MessageDirection::In)) {
             // Fully parse destination transaction.
             let Some(info) =
                 state.get_transaction_info(dst_tx_root.repr_hash(), Some(&snapshot))?
