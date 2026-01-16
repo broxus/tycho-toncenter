@@ -1,3 +1,5 @@
+use std::net::{IpAddr, Ipv4Addr};
+
 use anyhow::{Context, Result};
 use clap::Parser;
 use serde::{Deserialize, Serialize};
@@ -134,11 +136,20 @@ struct NodeConfig {
 
 impl Default for NodeConfig {
     fn default() -> Self {
+        let mut metrics = MetricsConfig::default();
+
+        // NOTE: Simplify usage for docker by default.
+        // Metrics don't expose anything sensible, and the exported
+        // amount is not that big to fill the whole channel.
+        metrics
+            .listen_addr
+            .set_ip(IpAddr::V4(Ipv4Addr::UNSPECIFIED));
+
         Self {
             base: NodeBaseConfig::default(),
             threads: ThreadPoolConfig::default(),
             logger_config: LoggerConfig::default(),
-            metrics: Some(MetricsConfig::default()),
+            metrics: Some(metrics),
             rpc: ExtRpcConfig::default(),
         }
     }

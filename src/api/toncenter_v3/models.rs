@@ -989,7 +989,7 @@ impl Message {
                 res.destination = to_std_addr(&info.dst);
                 res.value = Some(info.value.tokens);
                 res.value_extra_currencies = Some(ExtraCurrenciesStub {});
-                res.ihr_fee = Some(info.ihr_fee);
+                res.ihr_fee = Some(info.extra_flags.as_stored());
                 res.fwd_fee = Some(info.fwd_fee);
                 res.created_lt = Some(info.created_lt);
                 res.created_at = Some(info.created_at);

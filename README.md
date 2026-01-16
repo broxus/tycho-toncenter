@@ -50,10 +50,14 @@ mkdir -p data
 
 alias tycho-toncenter='docker run --userns=keep-id \
     --mount type=bind,src=./data,dst=/tycho,z \
+    -p 30000:30000/udp \
+    -p 10000:10000 \
+    -p 8000:8000 \
     ghcr.io/broxus/tycho-toncenter:latest'
 
 # Generate config.
 # NOTE: Paths are relative to the `./data` folder.
+# NOTE: Update exposed ports for a docker container when they are changed in the config.
 tycho-toncenter run --init-config ./config.json
 
 # Download `global-config.json` for the desired network,

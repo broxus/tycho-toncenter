@@ -9,10 +9,6 @@
   "core_storage": {
     "cells_cache_size": "4 GB"
   },
-  "threads": {
-    "rayon_threads": 32,
-    "tokio_workers": 32
-  },
   "logger_config": {
     "outputs": [
       {
@@ -21,7 +17,7 @@
     ]
   },
   "metrics": {
-    "listen_addr": "127.0.0.1:10000"
+    "listen_addr": "0.0.0.0:10000"
   },
   "rpc": {
     "listen_addr": "0.0.0.0:8000",

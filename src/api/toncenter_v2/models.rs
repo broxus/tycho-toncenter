@@ -937,7 +937,7 @@ impl TonlibMessage {
                 destination = to_std_addr(info.dst);
                 value = info.value.tokens;
                 fwd_fee = info.fwd_fee;
-                ihr_fee = info.ihr_fee;
+                ihr_fee = info.extra_flags.as_stored();
                 created_lt = info.created_lt;
             }
             MsgInfo::ExtIn(info) => {
