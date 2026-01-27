@@ -129,8 +129,21 @@ impl JrpcBehaviour for ApiV2Behaviour {
 
 // === Requests ===
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug)]
 pub struct EmptyParams;
+
+impl<'de> Deserialize<'de> for EmptyParams {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        #[derive(Deserialize)]
+        struct Empty {}
+
+        // Accepts both `null` and empty object.
+        <Option<Empty>>::deserialize(deserializer).map(|_| Self)
+    }
+}
 
 #[derive(Debug, Deserialize)]
 pub struct GetShardsParams {
@@ -1803,4 +1816,18 @@ mod code_hash {
         0xa2, 0x80, 0x0f, 0x17, 0xdd, 0xa8, 0x5e, 0xe6, 0xa8, 0x19, 0x8a, 0x70, 0x95, 0xed, 0xe1,
         0x0d, 0xcf,
     ]);
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn parse_empty_params() {
+        serde_json::from_str::<EmptyParams>("null").unwrap();
+        serde_json::from_str::<EmptyParams>("{}").unwrap();
+        serde_json::from_str::<EmptyParams>("{\"should_be_ignored\":123}").unwrap();
+
+        serde_json::from_str::<EmptyParams>("123").unwrap_err();
+    }
 }
