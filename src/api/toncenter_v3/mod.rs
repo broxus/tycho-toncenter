@@ -27,6 +27,7 @@ mod models;
 pub fn router() -> axum::Router<TonCenterRpcState> {
     axum::Router::new()
         .route("/masterchainInfo", get(get_masterchain_info))
+        .route("/masterchainBlockShards", get(get_masterchain_block_shards))
         .route("/blocks", get(get_blocks))
         .route("/transactions", get(get_transactions))
         .route(
@@ -71,6 +72,54 @@ async fn get_masterchain_info(State(state): State<RpcState>) -> Result<Response,
         last: Block::from_stored(&last_block_id, last_info),
         first: Block::from_stored(&first_block_id, first_info),
     }))
+}
+
+// === GET /masterchainBlockShards ===
+
+async fn get_masterchain_block_shards(
+    State(state): State<RpcState>,
+    query: Result<Query<McBlockShardsRequest>, QueryRejection>,
+) -> Result<Response, ErrorResponse> {
+    const MAX_LIMIT: usize = 1000;
+
+    let Query(query) = query?;
+    if query.limit.get() > MAX_LIMIT {
+        return Err(RpcStateError::bad_request(anyhow::anyhow!(
+            "`limit` is too big, at most {MAX_LIMIT} is allowed"
+        ))
+        .into());
+    }
+
+    let Some(snapshot) = state.rpc_storage_snapshot() else {
+        return Err(RpcStateError::NotReady.into());
+    };
+
+    handle_blocking(move || {
+        let mut blocks = Vec::new();
+
+        if let Some(block_ids) =
+            state.get_blocks_by_mc_seqno(query.seqno, Some(snapshot.clone()))?
+        {
+            for block_id in block_ids.skip(query.offset).take(query.limit.get()) {
+                let Some((block_id, _, info)) =
+                    state.get_brief_block_info(&block_id.as_short_id(), Some(&snapshot))?
+                else {
+                    return Err(ErrorResponse::internal(anyhow!(
+                        "missing block info for {block_id}"
+                    )));
+                };
+
+                blocks.push(Block::from_stored(&block_id, info));
+            }
+        }
+
+        if blocks.is_empty() {
+            return Ok(ErrorResponse::not_found("blocks not found").into_response());
+        }
+
+        Ok(ok_to_response(BlocksResponse { blocks }))
+    })
+    .await
 }
 
 // === GET /blocks ===

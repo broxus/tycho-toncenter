@@ -44,6 +44,15 @@ pub struct BlocksRequest {
     pub sort: SortDirection,
 }
 
+#[derive(Debug, Deserialize)]
+pub struct McBlockShardsRequest {
+    pub seqno: u32,
+    #[serde(default = "default_blocks_limit")]
+    pub limit: NonZeroUsize,
+    #[serde(default)]
+    pub offset: usize,
+}
+
 const fn default_blocks_limit() -> NonZeroUsize {
     NonZeroUsize::new(10).unwrap()
 }
