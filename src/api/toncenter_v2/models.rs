@@ -485,7 +485,7 @@ pub struct JettonMasterData {
     #[serde(with = "serde_helpers::string")]
     pub total_supply: num_bigint::BigInt,
     pub mintable: bool,
-    #[serde(with = "serde_helpers::option_tonlib_address")]
+    #[serde(with = "tonlib_address_or_empty")]
     pub admin_address: Option<StdAddr>,
     #[serde(serialize_with = "JettonMasterData::serialize_jetton_conent")]
     pub jetton_content: TokenDataAttributes,
@@ -908,9 +908,9 @@ pub struct TonlibMessage {
     pub ty: &'static str,
     #[serde(with = "serde_helpers::tonlib_hash")]
     pub hash: HashBytes,
-    #[serde(with = "serde_helpers::option_tonlib_address")]
+    #[serde(with = "tonlib_address_or_empty")]
     pub source: Option<StdAddr>,
-    #[serde(with = "serde_helpers::option_tonlib_address")]
+    #[serde(with = "tonlib_address_or_empty")]
     pub destination: Option<StdAddr>,
     #[serde(with = "serde_helpers::string")]
     pub value: Tokens,
@@ -1816,6 +1816,20 @@ mod code_hash {
         0xa2, 0x80, 0x0f, 0x17, 0xdd, 0xa8, 0x5e, 0xe6, 0xa8, 0x19, 0x8a, 0x70, 0x95, 0xed, 0xe1,
         0x0d, 0xcf,
     ]);
+}
+
+mod tonlib_address_or_empty {
+    use super::*;
+
+    pub fn serialize<S>(value: &Option<StdAddr>, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: serde::Serializer,
+    {
+        match value {
+            Some(value) => serde_helpers::tonlib_address::serialize(value, serializer),
+            None => serializer.serialize_str(""),
+        }
+    }
 }
 
 #[cfg(test)]
