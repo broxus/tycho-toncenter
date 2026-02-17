@@ -1138,7 +1138,18 @@ impl RunGetMethodResponse {
             }
         }
 
+        #[derive(Serialize)]
+        struct TaggedElements<T> {
+            #[serde(rename = "@type")]
+            ty: &'static str,
+            elements: T,
+        }
+
         struct List<'a>(&'a DynStackValue, &'a DynStackValue);
+
+        impl List<'_> {
+            const TAG: &'static str = "tvm.list";
+        }
 
         impl Serialize for List<'_> {
             fn serialize<S: serde::Serializer>(&self, s: S) -> Result<S::Ok, S::Error> {
@@ -1157,6 +1168,10 @@ impl RunGetMethodResponse {
         }
 
         struct Tuple<'a>(&'a [tycho_vm::RcStackValue]);
+
+        impl Tuple<'_> {
+            const TAG: &'static str = "tvm.tuple";
+        }
 
         impl Serialize for Tuple<'_> {
             fn serialize<S: serde::Serializer>(&self, s: S) -> Result<S::Ok, S::Error> {
@@ -1177,7 +1192,11 @@ impl RunGetMethodResponse {
         // TODO: Define numeric enum aliases in VM.
         match value.raw_ty() {
             // StackValueType::Null
-            0 => ("list", [(); 0]).serialize(serializer),
+            0 => ("list", TaggedElements {
+                ty: List::TAG,
+                elements: [(); 0],
+            })
+                .serialize(serializer),
             // StackValueType::Int
             1 => match value.as_int() {
                 Some(int) => ("num", Num(int)).serialize(serializer),
@@ -1208,12 +1227,20 @@ impl RunGetMethodResponse {
             }
             // StackValueType::Tuple
             6 => match value.as_list() {
-                Some((head, tail)) => ("list", List(head, tail)).serialize(serializer),
+                Some((head, tail)) => ("list", TaggedElements {
+                    ty: List::TAG,
+                    elements: List(head, tail),
+                })
+                    .serialize(serializer),
                 None => {
                     let tuple = value
                         .as_tuple()
                         .ok_or_else(|| Error::custom("invalid list"))?;
-                    ("tuple", Tuple(tuple)).serialize(serializer)
+                    ("tuple", TaggedElements {
+                        ty: Tuple::TAG,
+                        elements: Tuple(tuple),
+                    })
+                        .serialize(serializer)
                 }
             },
             _ => Err(Error::custom("unsupported stack item")),

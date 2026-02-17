@@ -1,7 +1,7 @@
 [package]
 name = "tycho-toncenter"
 description = "A partial TON Center API V2 and V3 implementation for Tycho-based networks"
-version = "0.2.7"
+version = "0.2.8"
 edition = "2024"
 authors = ["Broxus Team"]
 rust-version = "1.89.0"
@@ -32,10 +32,21 @@ serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
 sha2 = "0.10"
 thiserror = "2.0"
-tokio = { version = "1", features = ["rt-multi-thread", "macros", "sync", "time"] }
+tokio = { version = "1", features = [
+    "rt-multi-thread",
+    "macros",
+    "sync",
+    "time",
+] }
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
-tycho-types = { version = "0.3.0", features = ["sync", "base64", "rayon", "models", "rand9"] }
+tycho-types = { version = "0.3.0", features = [
+    "sync",
+    "base64",
+    "rayon",
+    "models",
+    "rand9",
+] }
 
 tikv-jemallocator = { version = "0.6.0", features = [
     "unprefixed_malloc_on_supported_platforms",
