@@ -1,14 +1,14 @@
-FROM rust:1.90-bookworm AS build
+FROM rust:1.96.1-bookworm AS build
 
 # Install dependencies for the node and LLVM
 RUN wget -O - https://apt.llvm.org/llvm-snapshot.gpg.key | apt-key add - && \
-    echo "deb http://apt.llvm.org/bookworm/ llvm-toolchain-bookworm-20 main" > /etc/apt/sources.list.d/llvm.list && \
-    echo "deb-src http://apt.llvm.org/bookworm/ llvm-toolchain-bookworm-20 main" >> /etc/apt/sources.list.d/llvm.list && \
+    echo "deb http://apt.llvm.org/bookworm/ llvm-toolchain-bookworm-22 main" > /etc/apt/sources.list.d/llvm.list && \
+    echo "deb-src http://apt.llvm.org/bookworm/ llvm-toolchain-bookworm-22 main" >> /etc/apt/sources.list.d/llvm.list && \
     apt-get update && apt-get install -y \
         libssl-dev \
         zlib1g-dev \
         pkg-config \
-        clang-20
+        clang-22
 
 # Cache build dependencies first
 RUN USER=root cargo new --bin tycho-toncenter
