@@ -923,6 +923,7 @@ pub struct Message {
     pub created_lt: Option<u64>,
     #[serde(with = "serde_helpers::option_string")]
     pub created_at: Option<u32>,
+    pub opcode: Option<Opcode>,
     pub ihr_disabled: Option<bool>,
     pub bounce: Option<bool>,
     pub bounced: Option<bool>,
@@ -965,6 +966,8 @@ impl Message {
             CellBuilder::build_from(cs)?
         };
 
+        let opcode = body.as_slice_allow_exotic().get_u32(0).map(Opcode).ok();
+
         let message_content = MessageContent {
             decoded: DecodedContent::try_load(body.as_ref()).ok(),
             hash: *body.repr_hash(),
@@ -981,6 +984,7 @@ impl Message {
             ihr_fee: None,
             created_lt: None,
             created_at: None,
+            opcode,
             ihr_disabled: None,
             bounce: None,
             bounced: None,
@@ -1097,6 +1101,15 @@ impl<'de> Deserialize<'de> for SortDirection {
 
 #[derive(Debug, Clone, Copy, Serialize)]
 pub struct ExtraCurrenciesStub {}
+
+#[derive(Debug, Clone, Copy)]
+pub struct Opcode(pub u32);
+
+impl serde::Serialize for Opcode {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        serializer.collect_str(&format_args!("0x{:08x}", self.0))
+    }
+}
 
 #[derive(Default)]
 pub struct AddressBook {
