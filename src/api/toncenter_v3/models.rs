@@ -1,4 +1,5 @@
 use std::borrow::Cow;
+use std::marker::PhantomData;
 use std::num::NonZeroUsize;
 
 use num_bigint::{BigInt, BigUint, Sign};
@@ -20,6 +21,19 @@ use crate::util::tonlib_helpers::{
 };
 
 // === Requests ===
+
+#[derive(Debug, Deserialize)]
+pub struct AccountStatesRequest {
+    #[serde(default, with = "tonlib_address_list")]
+    pub address: Vec<StdAddr>,
+
+    // TODO: Add support for code hash filter
+    #[expect(unused)]
+    #[serde(default, with = "tonlib_hash_list")]
+    pub code_hash: Vec<HashBytes>,
+
+    pub include_boc: bool,
+}
 
 #[derive(Debug, Deserialize)]
 pub struct BlocksRequest {
@@ -201,6 +215,35 @@ const fn default_sort_direction() -> SortDirection {
 }
 
 // === Responses ===
+
+#[derive(Default, Serialize)]
+pub struct AccountStatesResponse<'a> {
+    pub accounts: Vec<AccountStatesResponseItem<'a>>,
+    pub address_book: AddressBook,
+}
+
+#[derive(Debug, Serialize)]
+pub struct AccountStatesResponseItem<'a> {
+    pub address: StdAddr,
+    #[serde(with = "serde_helpers::tonlib_hash")]
+    pub account_state_hash: HashBytes,
+    #[serde(with = "serde_helpers::string")]
+    pub balance: Tokens,
+    pub extra_currencies: ExtraCurrenciesStub,
+    pub status: AccountStatus,
+    #[serde(with = "serde_helpers::tonlib_hash")]
+    pub last_transaction_hash: HashBytes,
+    #[serde(with = "serde_helpers::string")]
+    pub last_transaction_lt: u64,
+    #[serde(with = "serde_helpers::option_tonlib_hash")]
+    pub data_hash: Option<HashBytes>,
+    #[serde(with = "serde_helpers::option_tonlib_hash")]
+    pub code_hash: Option<HashBytes>,
+    pub data_boc: Option<&'a str>,
+    pub code_boc: Option<&'a str>,
+    pub contract_methods: (),
+    pub interfaces: [(); 0],
+}
 
 #[derive(Debug, Serialize)]
 pub struct MasterchainInfoResponse {
@@ -1458,6 +1501,46 @@ mod option_tonlib_address_list {
     }
 }
 
+mod tonlib_hash_list {
+    use std::str::FromStr;
+
+    use tycho_rpc::util::serde_helpers::{normalize_base64, should_normalize_base64};
+
+    use super::*;
+
+    pub fn deserialize<'de, D>(deserializer: D) -> Result<Vec<HashBytes>, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        #[derive(Deserialize)]
+        #[serde(transparent)]
+        #[repr(transparent)]
+        struct ListItem(#[serde(with = "serde_helpers::tonlib_hash")] HashBytes);
+
+        impl ListVisitorItem for ListItem {
+            type Inner = HashBytes;
+
+            const MAX_COUNT: usize = 1024;
+            const EXPECTING: &'static str = "hash list of at most 1024 items";
+
+            fn into_inner(self) -> Self::Inner {
+                self.0
+            }
+
+            fn inner_from_str<E: serde::de::Error>(s: &str) -> Result<Self::Inner, E> {
+                let mut s = Cow::Borrowed(s);
+                if s.len() == 44 && should_normalize_base64(&s) && !normalize_base64(s.to_mut()) {
+                    return Err(E::custom("invalid character"));
+                }
+
+                HashBytes::from_str(&s).map_err(E::custom)
+            }
+        }
+
+        deserializer.deserialize_seq(ListVisitor::<ListItem>(PhantomData))
+    }
+}
+
 mod tonlib_address_list {
     use tycho_types::models::StdAddrFormat;
 
@@ -1467,53 +1550,77 @@ mod tonlib_address_list {
     where
         D: serde::Deserializer<'de>,
     {
-        use serde::de::Error;
-
-        const MAX_SIZE: usize = 1024;
-
         #[derive(Deserialize)]
         #[serde(transparent)]
         #[repr(transparent)]
         struct ListItem(#[serde(with = "serde_helpers::tonlib_address")] StdAddr);
 
-        struct ListVisitor;
+        impl ListVisitorItem for ListItem {
+            type Inner = StdAddr;
 
-        impl<'de> serde::de::Visitor<'de> for ListVisitor {
-            type Value = Vec<StdAddr>;
+            const MAX_COUNT: usize = 1024;
+            const EXPECTING: &'static str = "address list of at most 1024 items";
 
-            fn expecting(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
-                f.write_str("address list of at most 1024 items")
+            fn into_inner(self) -> Self::Inner {
+                self.0
             }
 
-            fn visit_str<E>(self, v: &str) -> Result<Self::Value, E>
-            where
-                E: serde::de::Error,
-            {
-                let mut result = Vec::new();
-                for v in v.split(',') {
-                    let (addr, _) =
-                        StdAddr::from_str_ext(v, StdAddrFormat::any()).map_err(E::custom)?;
-                    result.push(addr);
-                }
-                Ok(result)
-            }
-
-            fn visit_seq<A>(self, mut seq: A) -> Result<Self::Value, A::Error>
-            where
-                A: serde::de::SeqAccess<'de>,
-            {
-                let mut items = Vec::new();
-                while let Some(ListItem(item)) = seq.next_element()? {
-                    if items.len() >= MAX_SIZE {
-                        return Err(Error::custom("too many items in address filter"));
-                    }
-                    items.push(item);
-                }
-                Ok(items)
+            fn inner_from_str<E: serde::de::Error>(s: &str) -> Result<Self::Inner, E> {
+                let (addr, _) =
+                    StdAddr::from_str_ext(s, StdAddrFormat::any()).map_err(E::custom)?;
+                Ok(addr)
             }
         }
 
-        deserializer.deserialize_seq(ListVisitor)
+        deserializer.deserialize_seq(ListVisitor::<ListItem>(PhantomData))
+    }
+}
+
+trait ListVisitorItem {
+    type Inner;
+
+    const MAX_COUNT: usize;
+    const EXPECTING: &'static str;
+
+    fn into_inner(self) -> Self::Inner;
+    fn inner_from_str<E: serde::de::Error>(s: &str) -> Result<Self::Inner, E>;
+}
+
+struct ListVisitor<T>(PhantomData<T>);
+
+impl<'de, T> serde::de::Visitor<'de> for ListVisitor<T>
+where
+    T: ListVisitorItem + serde::Deserialize<'de>,
+{
+    type Value = Vec<T::Inner>;
+
+    fn expecting(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
+        f.write_str(T::EXPECTING)
+    }
+
+    fn visit_str<E: serde::de::Error>(self, v: &str) -> Result<Self::Value, E> {
+        let mut result = Vec::new();
+        for v in v.split(',') {
+            let item = T::inner_from_str(v)?;
+            result.push(item);
+        }
+        Ok(result)
+    }
+
+    fn visit_seq<A>(self, mut seq: A) -> Result<Self::Value, A::Error>
+    where
+        A: serde::de::SeqAccess<'de>,
+    {
+        use serde::de::Error;
+
+        let mut items = Vec::new();
+        while let Some(item) = seq.next_element::<T>()? {
+            if items.len() >= T::MAX_COUNT {
+                return Err(Error::custom("too many items in address filter"));
+            }
+            items.push(item.into_inner());
+        }
+        Ok(items)
     }
 }
 

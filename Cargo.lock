@@ -3367,6 +3367,7 @@ dependencies = [
  "axum",
  "base64",
  "bb8",
+ "bumpalo",
  "bytes",
  "castaway",
  "clap",

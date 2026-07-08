@@ -9,6 +9,7 @@ use axum::extract::{Query, State};
 use axum::http::{self, StatusCode};
 use axum::response::{IntoResponse, Response};
 use axum::routing::{get, post};
+use bumpalo::Bump;
 use bytes::Bytes;
 use serde::Serialize;
 use tokio::sync::OwnedSemaphorePermit;
@@ -18,11 +19,11 @@ use tycho_rpc::{
     TransactionInfo,
 };
 use tycho_types::models::{
-    BlockId, BlockIdShort, IntAddr, IntMsgInfo, MsgType, ShardIdent, StdAddr,
+    AccountStatus, BlockId, BlockIdShort, IntAddr, IntMsgInfo, MsgType, ShardIdent, StdAddr,
 };
 use tycho_types::prelude::*;
-use tycho_util::FastHashSet;
 use tycho_util::sync::rayon_run;
+use tycho_util::{FastHashSet, FastHasherState};
 
 use self::models::{Transaction, *};
 use crate::state::TonCenterRpcState;
@@ -33,6 +34,7 @@ mod models;
 
 pub fn router() -> axum::Router<TonCenterRpcState> {
     axum::Router::new()
+        .route("/accountStates", get(get_account_states))
         .route("/masterchainInfo", get(get_masterchain_info))
         .route("/masterchainBlockShards", get(get_masterchain_block_shards))
         .route("/blocks", get(get_blocks))
@@ -46,6 +48,116 @@ pub fn router() -> axum::Router<TonCenterRpcState> {
         .route("/jetton/masters", get(get_jetton_masters))
         .route("/jetton/wallets", get(get_jetton_wallets))
         .route("/runGetMethod", post(post_run_get_method))
+}
+
+// === GET /accountStates ===
+
+async fn get_account_states(
+    State(state): State<RpcState>,
+    query: Result<Query<AccountStatesRequest>, QueryRejection>,
+) -> Result<Response, ErrorResponse> {
+    use base64::prelude::{BASE64_STANDARD, Engine as _};
+    use tycho_types::boc::ser;
+
+    const MAX_ACCOUNTS: usize = 1000;
+
+    let Query(mut query) = query?;
+    if query.address.len() > MAX_ACCOUNTS {
+        return Err(RpcStateError::bad_request(anyhow::anyhow!(
+            "too many accounts, at most {MAX_ACCOUNTS} are allowed"
+        ))
+        .into());
+    }
+
+    handle_blocking(move || {
+        query.address.sort();
+        query.address.dedup();
+
+        let alloc = Bump::new();
+        let mut boc = Vec::new();
+        let mut boc_base64 = String::new();
+
+        let mut encode_boc = |cell: &Cell| -> &str {
+            boc.clear();
+            ser::BocHeader::<FastHasherState>::with_root(cell.as_ref()).encode(&mut boc);
+
+            boc_base64.clear();
+            BASE64_STANDARD.encode_string(&boc, &mut boc_base64);
+
+            alloc.alloc_str(&boc_base64)
+        };
+
+        let mut accounts = Vec::with_capacity(query.address.len());
+        let mut address_book = AddressBook::default();
+
+        // TODO: Merge into a single atomic read of all states.
+        for address in query.address {
+            let LoadedAccountState::Found {
+                state,
+                // NOTE: Ensure that this handle outlives account state.
+                mc_ref_handle: _mc_ref_handle,
+                ..
+            } = state.get_account_state(&address)?
+            else {
+                continue;
+            };
+
+            let account_state_hash = *state.account.repr_hash();
+            let Some(account) = state.load_account().map_err(ErrorResponse::internal)? else {
+                continue;
+            };
+
+            let mut data_hash = None;
+            let mut code_hash = None;
+            let mut data_boc = None;
+            let mut code_boc = None;
+            let status = match account.state {
+                tycho_types::models::AccountState::Uninit => AccountStatus::Uninit,
+                tycho_types::models::AccountState::Active(state_init) => {
+                    if let Some(data) = &state_init.data {
+                        data_hash = Some(*data.repr_hash());
+                        if query.include_boc {
+                            data_boc = Some(encode_boc(data));
+                        }
+                    }
+                    if let Some(code) = &state_init.code {
+                        code_hash = Some(*code.repr_hash());
+                        if query.include_boc {
+                            code_boc = Some(encode_boc(code));
+                        }
+                    }
+                    AccountStatus::Active
+                }
+                tycho_types::models::AccountState::Frozen(_) => AccountStatus::Frozen,
+            };
+
+            address_book.items.insert(address.clone());
+            accounts.push(AccountStatesResponseItem {
+                address,
+                account_state_hash,
+                balance: account.balance.tokens,
+                extra_currencies: ExtraCurrenciesStub {},
+                status: status.into(),
+                last_transaction_hash: state.last_trans_hash,
+                last_transaction_lt: state.last_trans_lt,
+                data_hash,
+                code_hash,
+                data_boc,
+                code_boc,
+                contract_methods: (),
+                interfaces: [],
+            });
+        }
+
+        Ok::<_, ErrorResponse>(
+            axum::Json(AccountStatesResponse {
+                accounts,
+                address_book,
+            })
+            .into_response(),
+        )
+    })
+    .await
 }
 
 // === GET /masterchainInfo ===
@@ -1130,14 +1242,8 @@ async fn post_run_get_method(
     State(state): State<RpcState>,
     body: Result<Json<RunGetMethodRequest>, JsonRejection>,
 ) -> Result<Response, ErrorResponse> {
-    let Json(params) = body?;
-    handle_run_get_method(state, params).await
-}
+    let Json(p) = body?;
 
-async fn handle_run_get_method(
-    state: RpcState,
-    p: RunGetMethodRequest,
-) -> Result<Response, ErrorResponse> {
     enum RunMethodError {
         RpcError(RpcStateError),
         InvalidParams(tycho_types::error::Error),
