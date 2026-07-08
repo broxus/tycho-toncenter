@@ -22,8 +22,8 @@ use tycho_rpc::util::jrpc_extractor::{
 };
 use tycho_rpc::util::mime::{APPLICATION_JSON, get_mime_type};
 use tycho_rpc::{
-    BadRequestError, BlockTransactionsCursor, GenTimings, LoadedAccountState, RpcState,
-    RpcStateError, RunGetMethodPermit,
+    BadRequestError, BlockTransactionsCursor, LoadedAccountState, RpcState, RpcStateError,
+    RunGetMethodPermit,
 };
 use tycho_types::models::*;
 use tycho_types::num::Tokens;
@@ -33,9 +33,7 @@ use tycho_util::sync::rayon_run;
 
 use self::models::*;
 use crate::state::TonCenterRpcState;
-use crate::util::tonlib_helpers::{
-    ExecutorError, RunGetterParams, SimpleExecutor, StackParser, VmOutput, compute_method_id,
-};
+use crate::util::tonlib_helpers::{LimitStackItems, StackParser, compute_method_id, run_getter};
 
 pub mod models;
 
@@ -987,7 +985,7 @@ async fn handle_run_get_method(id: JrpcId, state: RpcState, p: RunGetMethodParam
         }
 
         // Load account state.
-        let (block_id, shard_state, _mc_ref_handle, timings) = match state
+        let (block_id, shard_state, mc_ref_handle, timings) = match state
             .get_account_state(&p.address)
             .map_err(RunMethodError::RpcError)?
         {
@@ -998,7 +996,7 @@ async fn handle_run_get_method(id: JrpcId, state: RpcState, p: RunGetMethodParam
                 timings,
             } => (mc_block_id, state, mc_ref_handle, timings),
             LoadedAccountState::NotFound { mc_block_id, .. } => {
-                return Ok(RunGetMethodResponse {
+                return Ok((None, RunGetMethodResponse {
                     ty: RunGetMethodResponse::TY,
                     exit_code: tycho_vm::VmException::Fatal.as_exit_code(),
                     gas_used: 0,
@@ -1006,7 +1004,7 @@ async fn handle_run_get_method(id: JrpcId, state: RpcState, p: RunGetMethodParam
                     last_transaction_id: TonlibTransactionId::default(),
                     block_id: TonlibBlockId::from(*mc_block_id),
                     extra: TonlibExtra,
-                });
+                }));
             }
         };
 
@@ -1021,7 +1019,7 @@ async fn handle_run_get_method(id: JrpcId, state: RpcState, p: RunGetMethodParam
         }
 
         // Prepare response.
-        Ok::<_, RunMethodError>(RunGetMethodResponse {
+        Ok::<_, RunMethodError>((Some(mc_ref_handle), RunGetMethodResponse {
             ty: RunGetMethodResponse::TY,
             exit_code: res.exit_code,
             gas_used: res.gas_used,
@@ -1029,14 +1027,13 @@ async fn handle_run_get_method(id: JrpcId, state: RpcState, p: RunGetMethodParam
             last_transaction_id,
             block_id: TonlibBlockId::from(*block_id),
             extra: TonlibExtra,
-        })
+        }))
     };
 
     rayon_run(move || {
         let res = match f() {
-            Ok(res) => {
-                RunGetMethodResponse::set_items_limit(max_response_stack_items);
-                ok_to_response(id, res)
+            Ok((_mc_ref_handle, res)) => {
+                ok_to_response(id, LimitStackItems::new(res, max_response_stack_items))
             }
             Err(RunMethodError::RpcError(e)) => error_to_response(id, e),
             Err(RunMethodError::InvalidParams(e)) => {
@@ -1168,40 +1165,6 @@ async fn acquire_getter_permit(
             },
         )),
     }
-}
-
-fn run_getter(
-    state: &RpcState,
-    account_state: &ShardAccount,
-    timings: GenTimings,
-    method_id: i64,
-    stack: Vec<tycho_vm::RcStackValue>,
-    gas_limit: u64,
-) -> Result<VmOutput, tycho_types::error::Error> {
-    let Some(account) = account_state.load_account()? else {
-        return Ok(VmOutput::no_code());
-    };
-
-    let config = state.get_unpacked_blockchain_config();
-
-    SimpleExecutor {
-        libraries: state.get_libraries(),
-        raw_config: config.raw.clone(),
-        unpacked_config: config.unpacked.clone(),
-        timings,
-        modifiers: config.modifiers,
-    }
-    .run_getter_raw(
-        &account,
-        RunGetterParams::new(method_id)
-            .with_args(stack)
-            .with_gas_limit(gas_limit),
-    )
-    .or_else(|e| match e {
-        ExecutorError::AccountNotActive => Ok(VmOutput::no_code()),
-        ExecutorError::StateAccess(e) => Err(e),
-        ExecutorError::FailedToParse(_) => Err(tycho_types::error::Error::InvalidData),
-    })
 }
 
 #[cfg(test)]

@@ -1,7 +1,6 @@
 use std::cell::RefCell;
 use std::num::NonZeroU8;
 use std::str::FromStr;
-use std::sync::OnceLock;
 
 use anyhow::Context;
 use base64::prelude::{BASE64_STANDARD, Engine as _};
@@ -27,7 +26,10 @@ use tycho_types::num::Tokens;
 use tycho_types::prelude::*;
 use tycho_util::FastHashMap;
 
-use crate::util::tonlib_helpers::{StackParser, TokenDataAttribute, TokenDataAttributes};
+use crate::util::tonlib_helpers::{
+    LimitStackItems, StackParser, TokenDataAttribute, TokenDataAttributes, limit_tuple_depth,
+    parse_cell_mapped, parse_vm_bigint,
+};
 
 // === ID ===
 
@@ -1076,10 +1078,6 @@ pub struct RunGetMethodResponse {
 impl RunGetMethodResponse {
     pub const TY: &str = "smc.runResult";
 
-    pub fn set_items_limit(limit: usize) {
-        STACK_ITEMS_LIMIT.set(limit);
-    }
-
     fn serialize_stack<S>(
         value: &Option<tycho_vm::SafeRc<tycho_vm::Stack>>,
         serializer: S,
@@ -1105,19 +1103,7 @@ impl RunGetMethodResponse {
     {
         use serde::ser::Error;
 
-        let is_limit_ok = STACK_ITEMS_LIMIT.with(|limit| {
-            let current_limit = limit.get();
-            if current_limit > 0 {
-                limit.set(current_limit - 1);
-                true
-            } else {
-                false
-            }
-        });
-
-        if !is_limit_ok {
-            return Err(Error::custom("too many stack items in response"));
-        }
+        LimitStackItems::use_limit()?;
 
         struct Num<'a>(&'a BigInt);
 
@@ -1248,10 +1234,6 @@ impl RunGetMethodResponse {
     }
 }
 
-thread_local! {
-    static STACK_ITEMS_LIMIT: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
-}
-
 #[repr(transparent)]
 struct TonlibOutputStackItem<'a>(&'a DynStackValue);
 
@@ -1261,34 +1243,7 @@ impl Serialize for TonlibOutputStackItem<'_> {
     where
         S: serde::Serializer,
     {
-        use serde::ser::Error;
-
-        const MAX_DEPTH: usize = 16;
-
-        thread_local! {
-            static DEPTH: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
-        }
-
-        let is_depth_ok = DEPTH.with(|depth| {
-            let current_depth = depth.get();
-            if current_depth < MAX_DEPTH {
-                depth.set(current_depth + 1);
-                true
-            } else {
-                false
-            }
-        });
-
-        if !is_depth_ok {
-            return Err(Error::custom("too deep stack item"));
-        }
-
-        scopeguard::defer! {
-            DEPTH.with(|depth| {
-                depth.set(depth.get() - 1);
-            })
-        };
-
+        let _guard = limit_tuple_depth()?;
         RunGetMethodResponse::serialize_stack_item(self.0, serializer)
     }
 }
@@ -1335,25 +1290,6 @@ impl<'de> Deserialize<'de> for TonlibInputStackItem {
     {
         use serde::de::Error;
 
-        struct IntBounds {
-            min: BigInt,
-            max: BigInt,
-        }
-
-        impl IntBounds {
-            fn get() -> &'static Self {
-                static BOUNDS: OnceLock<IntBounds> = OnceLock::new();
-                BOUNDS.get_or_init(|| Self {
-                    min: BigInt::from(-1) << 256,
-                    max: (BigInt::from(1) << 256) - 1,
-                })
-            }
-
-            fn contains(&self, int: &BigInt) -> bool {
-                *int >= self.min && *int <= self.max
-            }
-        }
-
         #[derive(Deserialize)]
         enum StackItemType {
             #[serde(rename = "num")]
@@ -1379,22 +1315,13 @@ impl<'de> Deserialize<'de> for TonlibInputStackItem {
             where
                 A: serde::de::SeqAccess<'de>,
             {
-                fn map_cell<T, F: FnOnce(Cell) -> T, E: Error>(
-                    value: impl AsRef<str>,
-                    f: F,
-                ) -> Result<T, E> {
-                    Boc::decode_base64(value.as_ref())
-                        .map(f)
-                        .map_err(Error::custom)
-                }
-
                 let Some(ty) = seq.next_element()? else {
                     return Err(Error::custom(
                         "expected the first item to be a stack item type",
                     ));
                 };
 
-                let Some(serde_helpers::BorrowedStr(value)) = seq.next_element()? else {
+                let Some(serde_helpers::BorrowedStr(v)) = seq.next_element()? else {
                     return Err(Error::custom(
                         "expected the second item to be a stack item value",
                     ));
@@ -1408,25 +1335,10 @@ impl<'de> Deserialize<'de> for TonlibInputStackItem {
                 }
 
                 match ty {
-                    StackItemType::Num => {
-                        const MAX_INT_LEN: usize = 79;
-
-                        if value.len() > MAX_INT_LEN {
-                            return Err(Error::invalid_length(
-                                value.len(),
-                                &"a decimal integer in range [-2^256, 2^256)",
-                            ));
-                        }
-
-                        let int = BigInt::from_str(value.as_ref()).map_err(Error::custom)?;
-                        if !IntBounds::get().contains(&int) {
-                            return Err(Error::custom("integer out of bounds"));
-                        }
-                        Ok(TonlibInputStackItem::Num(int))
-                    }
-                    StackItemType::Cell => map_cell(value, TonlibInputStackItem::Cell),
-                    StackItemType::Slice => map_cell(value, TonlibInputStackItem::Slice),
-                    StackItemType::Builder => map_cell(value, TonlibInputStackItem::Builder),
+                    StackItemType::Num => parse_vm_bigint(&v).map(TonlibInputStackItem::Num),
+                    StackItemType::Cell => parse_cell_mapped(v, TonlibInputStackItem::Cell),
+                    StackItemType::Slice => parse_cell_mapped(v, TonlibInputStackItem::Slice),
+                    StackItemType::Builder => parse_cell_mapped(v, TonlibInputStackItem::Builder),
                 }
             }
         }

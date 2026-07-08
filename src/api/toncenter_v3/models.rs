@@ -1,7 +1,8 @@
+use std::borrow::Cow;
 use std::num::NonZeroUsize;
 
-use num_bigint::BigUint;
-use serde::ser::{SerializeMap, SerializeStruct};
+use num_bigint::{BigInt, BigUint, Sign};
+use serde::ser::{SerializeMap, SerializeSeq, SerializeStruct};
 use serde::{Deserialize, Serialize};
 use tycho_block_util::message::build_normalized_external_message;
 use tycho_rpc::util::serde_helpers;
@@ -14,7 +15,9 @@ use tycho_types::prelude::*;
 use tycho_util::FastHashSet;
 use tycho_util::serde_helpers::BorrowedStr;
 
-use crate::util::tonlib_helpers::load_bytes_rope;
+use crate::util::tonlib_helpers::{
+    LimitStackItems, limit_tuple_depth, load_bytes_rope, parse_cell_mapped, parse_vm_bigint,
+};
 
 // === Requests ===
 
@@ -179,6 +182,16 @@ pub struct JettonWalletsRequest {
     pub sort: Option<SortDirection>,
 }
 
+#[derive(Debug, Deserialize)]
+pub struct RunGetMethodRequest {
+    #[serde(with = "serde_helpers::tonlib_address")]
+    pub address: StdAddr,
+    #[serde(with = "serde_helpers::method_id")]
+    pub method: i64,
+    #[serde(default)]
+    pub stack: Vec<InputStackItem>,
+}
+
 const fn default_limit() -> NonZeroUsize {
     NonZeroUsize::new(10).unwrap()
 }
@@ -216,6 +229,274 @@ impl TransactionsResponse {
         }
     }
 }
+
+// === VM Output ===
+
+#[derive(Serialize)]
+pub struct RunGetMethodResponse {
+    pub gas_used: u64,
+    pub exit_code: i32,
+    #[serde(serialize_with = "RunGetMethodResponse::serialize_stack")]
+    pub stack: Option<tycho_vm::SafeRc<tycho_vm::Stack>>,
+}
+
+impl RunGetMethodResponse {
+    fn serialize_stack<S>(
+        value: &Option<tycho_vm::SafeRc<tycho_vm::Stack>>,
+        serializer: S,
+    ) -> Result<S::Ok, S::Error>
+    where
+        S: serde::Serializer,
+    {
+        match value {
+            Some(stack) => {
+                let mut seq = serializer.serialize_seq(Some(stack.depth()))?;
+                for item in &stack.items {
+                    seq.serialize_element(&OutputStackItem(item.as_ref()))?;
+                }
+                seq.end()
+            }
+            None => [(); 0].serialize(serializer),
+        }
+    }
+
+    fn serialize_stack_item<S>(value: &DynStackValue, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: serde::Serializer,
+    {
+        use serde::ser::Error;
+
+        LimitStackItems::use_limit()?;
+
+        struct Num<'a>(&'a BigInt);
+
+        impl std::fmt::Display for Num<'_> {
+            fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+                let sign = if self.0.sign() == Sign::Minus {
+                    "-"
+                } else {
+                    ""
+                };
+                write!(f, "{sign}0x{:x}", self.0.magnitude())
+            }
+        }
+
+        impl Serialize for Num<'_> {
+            fn serialize<S: serde::Serializer>(&self, s: S) -> Result<S::Ok, S::Error> {
+                s.collect_str(self)
+            }
+        }
+
+        struct CellBoc<'a>(&'a Cell);
+
+        impl Serialize for CellBoc<'_> {
+            fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+                Boc::serialize(self.0, serializer)
+            }
+        }
+
+        struct List<'a>(&'a DynStackValue, &'a DynStackValue);
+
+        impl Serialize for List<'_> {
+            fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+                let mut seq = serializer.serialize_seq(None)?;
+                seq.serialize_element(&OutputStackItem(self.0))?;
+                let mut next = self.1;
+                while !next.is_null() {
+                    let (head, tail) = next
+                        .as_pair()
+                        .ok_or_else(|| Error::custom("invalid list"))?;
+                    seq.serialize_element(&OutputStackItem(head))?;
+                    next = tail;
+                }
+                seq.end()
+            }
+        }
+
+        struct Tuple<'a>(&'a [tycho_vm::RcStackValue]);
+
+        impl Serialize for Tuple<'_> {
+            fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+                let mut seq = serializer.serialize_seq(Some(self.0.len()))?;
+                for item in self.0 {
+                    seq.serialize_element(&OutputStackItem(item.as_ref()))?;
+                }
+                seq.end()
+            }
+        }
+
+        #[derive(Serialize)]
+        struct StackEntity<T> {
+            #[serde(rename = "type")]
+            ty: &'static str,
+            value: T,
+        }
+
+        match value.raw_ty() {
+            // StackValueType::Null
+            0 => StackEntity {
+                ty: "list",
+                value: [(); 0],
+            }
+            .serialize(serializer),
+            // StackValueType::Int
+            1 => match value.as_int() {
+                Some(int) => StackEntity {
+                    ty: "num",
+                    value: Num(int),
+                }
+                .serialize(serializer),
+                None => StackEntity {
+                    ty: "num",
+                    value: "(null)",
+                }
+                .serialize(serializer),
+            },
+            // StackValueType::Cell
+            2 => {
+                let cell = value
+                    .as_cell()
+                    .ok_or_else(|| Error::custom("invalid cell"))?;
+                StackEntity {
+                    ty: "cell",
+                    value: CellBoc(cell),
+                }
+                .serialize(serializer)
+            }
+            // StackValueType::Slice
+            3 => {
+                let slice = value
+                    .as_cell_slice()
+                    .ok_or_else(|| Error::custom("invalid slice"))?;
+
+                let built;
+                let cell = if slice.range().is_full(slice.cell().as_ref()) {
+                    slice.cell()
+                } else {
+                    built = CellBuilder::build_from(slice.apply()).map_err(Error::custom)?;
+                    &built
+                };
+
+                StackEntity {
+                    ty: "slice",
+                    value: CellBoc(cell),
+                }
+                .serialize(serializer)
+            }
+            // StackValueType::Tuple
+            6 => match value.as_list() {
+                Some((head, tail)) => StackEntity {
+                    ty: "list",
+                    value: List(head, tail),
+                }
+                .serialize(serializer),
+                None => {
+                    let tuple = value
+                        .as_tuple()
+                        .ok_or_else(|| Error::custom("invalid tuple"))?;
+                    StackEntity {
+                        ty: "tuple",
+                        value: Tuple(tuple),
+                    }
+                    .serialize(serializer)
+                }
+            },
+            _ => Err(Error::custom("unsupported stack item")),
+        }
+    }
+}
+
+#[repr(transparent)]
+struct OutputStackItem<'a>(&'a DynStackValue);
+
+impl Serialize for OutputStackItem<'_> {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: serde::Serializer,
+    {
+        let _guard = limit_tuple_depth()?;
+        RunGetMethodResponse::serialize_stack_item(self.0, serializer)
+    }
+}
+
+type DynStackValue = dyn tycho_vm::StackValue + 'static;
+
+// === Input Stack Item ===
+
+#[derive(Debug, PartialEq, Eq)]
+pub enum InputStackItem {
+    Num(BigInt),
+    Cell(Cell),
+    Slice(Cell),
+}
+
+impl TryFrom<InputStackItem> for tycho_vm::RcStackValue {
+    type Error = tycho_types::error::Error;
+
+    fn try_from(value: InputStackItem) -> Result<Self, Self::Error> {
+        match value {
+            InputStackItem::Num(num) => Ok(tycho_vm::RcStackValue::new_dyn_value(num)),
+            InputStackItem::Cell(cell) => Ok(tycho_vm::RcStackValue::new_dyn_value(cell)),
+            InputStackItem::Slice(cell) => {
+                if cell.is_exotic() {
+                    return Err(tycho_types::error::Error::UnexpectedExoticCell);
+                }
+                let slice = tycho_vm::OwnedCellSlice::new_allow_exotic(cell);
+                Ok(tycho_vm::RcStackValue::new_dyn_value(slice))
+            }
+        }
+    }
+}
+
+impl<'de> Deserialize<'de> for InputStackItem {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        use serde::de::Error;
+
+        #[derive(Debug, Deserialize)]
+        enum StackItemType {
+            #[serde(rename = "num")]
+            Num,
+            #[serde(rename = "cell")]
+            Cell,
+            #[serde(rename = "slice")]
+            Slice,
+        }
+
+        #[derive(Deserialize)]
+        struct StackItem<'a> {
+            #[serde(rename = "type")]
+            ty: StackItemType,
+            #[serde(borrow)]
+            value: Value<'a>,
+        }
+
+        #[derive(Deserialize)]
+        #[serde(untagged)]
+        enum Value<'a> {
+            Int(i64),
+            String(#[serde(borrow)] Cow<'a, str>),
+        }
+
+        let StackItem { ty, value } = StackItem::deserialize(deserializer)?;
+
+        match (ty, value) {
+            (StackItemType::Num, v) => match v {
+                Value::Int(v) => Ok(InputStackItem::Num(BigInt::from(v))),
+                Value::String(v) => parse_vm_bigint(v).map(InputStackItem::Num),
+            },
+            (StackItemType::Cell, Value::String(v)) => parse_cell_mapped(v, InputStackItem::Cell),
+            (StackItemType::Slice, Value::String(v)) => parse_cell_mapped(v, InputStackItem::Slice),
+            (t, _) => Err(Error::custom(format_args!(
+                "a string value is expected for stack item of type {t:?}"
+            ))),
+        }
+    }
+}
+
+// === Jetton Masters ===
 
 #[derive(Serialize)]
 pub struct JettonMastersResponse {
@@ -275,6 +556,8 @@ impl JettonMastersResponseItem {
         }
     }
 }
+
+// === Jetton Wallets ===
 
 #[derive(Serialize)]
 pub struct JettonWalletsResponse {
@@ -1242,5 +1525,49 @@ mod tests {
     fn parse_wallets_request() {
         let parsed: JettonWalletsRequest = serde_urlencoded::from_str("owner_address=0:21fc9cf9b5f7ebfb16ac172a70b052dedd7bdd60199c3632eb336192f7d9f9b3,0:56a4f5a8a42fd45d0beedb0fa08ebb98a9a55720dccb9986e4a62e79d3f993b4").unwrap();
         println!("{parsed:#?}");
+    }
+
+    #[test]
+    fn parse_stack_item() {
+        // num
+        let res: InputStackItem = serde_json::from_str("{\"type\":\"num\",\"value\":123}").unwrap();
+        assert_eq!(res, InputStackItem::Num(BigInt::from(123)));
+
+        let res: InputStackItem =
+            serde_json::from_str("{\"type\":\"num\",\"value\":\"123\"}").unwrap();
+        assert_eq!(res, InputStackItem::Num(BigInt::from(123)));
+
+        let res: InputStackItem =
+            serde_json::from_str("{\"type\":\"num\",\"value\":\"0xabc\"}").unwrap();
+        assert_eq!(res, InputStackItem::Num(BigInt::from(0xabc)));
+
+        let res: InputStackItem =
+            serde_json::from_str("{\"type\":\"num\",\"value\":\"-0xabc\"}").unwrap();
+        assert_eq!(res, InputStackItem::Num(BigInt::from(-0xabc)));
+
+        let res: InputStackItem = serde_json::from_str(
+            "{\"type\":\"num\",\"value\":\
+            \"-0x0000000000000000000000000000000000000000000000000000000000000000\"}",
+        )
+        .unwrap();
+        assert_eq!(res, InputStackItem::Num(BigInt::from(0)));
+
+        // slice
+        let json = serde_json::to_string(&serde_json::json!({
+            "type": "slice",
+            "value": Boc::encode_base64(Cell::empty_cell())
+        }))
+        .unwrap();
+        let res: InputStackItem = serde_json::from_str(&json).unwrap();
+        assert_eq!(res, InputStackItem::Slice(Cell::empty_cell()));
+
+        // cell
+        let json = serde_json::to_string(&serde_json::json!({
+            "type": "cell",
+            "value": Boc::encode_base64(Cell::empty_cell())
+        }))
+        .unwrap();
+        let res: InputStackItem = serde_json::from_str(&json).unwrap();
+        assert_eq!(res, InputStackItem::Cell(Cell::empty_cell()));
     }
 }

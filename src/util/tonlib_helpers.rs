@@ -1,11 +1,13 @@
+use std::str::FromStr;
 use std::sync::OnceLock;
 
 use anyhow::{Result, anyhow};
 use num_bigint::{BigInt, BigUint};
 use sha2::Digest;
-use tycho_rpc::GenTimings;
+use tycho_rpc::{GenTimings, RpcState};
 use tycho_types::models::{
-    Account, AccountState, BlockchainConfigParams, CurrencyCollection, IntAddr, LibDescr, StdAddr,
+    Account, AccountState, BlockchainConfigParams, CurrencyCollection, IntAddr, LibDescr,
+    ShardAccount, StdAddr,
 };
 use tycho_types::num::Tokens;
 use tycho_types::prelude::*;
@@ -520,6 +522,40 @@ impl VmOutput {
     }
 }
 
+pub fn run_getter(
+    state: &RpcState,
+    account_state: &ShardAccount,
+    timings: GenTimings,
+    method_id: i64,
+    stack: Vec<RcStackValue>,
+    gas_limit: u64,
+) -> Result<VmOutput, tycho_types::error::Error> {
+    let Some(account) = account_state.load_account()? else {
+        return Ok(VmOutput::no_code());
+    };
+
+    let config = state.get_unpacked_blockchain_config();
+
+    SimpleExecutor {
+        libraries: state.get_libraries(),
+        raw_config: config.raw.clone(),
+        unpacked_config: config.unpacked.clone(),
+        timings,
+        modifiers: config.modifiers,
+    }
+    .run_getter_raw(
+        &account,
+        RunGetterParams::new(method_id)
+            .with_args(stack)
+            .with_gas_limit(gas_limit),
+    )
+    .or_else(|e| match e {
+        ExecutorError::AccountNotActive => Ok(VmOutput::no_code()),
+        ExecutorError::StateAccess(e) => Err(e),
+        ExecutorError::FailedToParse(_) => Err(tycho_types::error::Error::InvalidData),
+    })
+}
+
 #[derive(Debug, thiserror::Error)]
 pub enum ExecutorError {
     #[error("failed to prepare account state: {0}")]
@@ -528,4 +564,142 @@ pub enum ExecutorError {
     AccountNotActive,
     #[error("failed to parse output: {0}")]
     FailedToParse(anyhow::Error),
+}
+
+pub fn parse_vm_bigint<E: serde::de::Error>(value: impl AsRef<str>) -> Result<BigInt, E> {
+    use serde::de::Error;
+
+    struct IntBounds {
+        min: BigInt,
+        max: BigInt,
+    }
+
+    impl IntBounds {
+        fn get() -> &'static Self {
+            static BOUNDS: OnceLock<IntBounds> = OnceLock::new();
+            BOUNDS.get_or_init(|| Self {
+                min: BigInt::from(-1) << 256,
+                max: (BigInt::from(1) << 256) - 1,
+            })
+        }
+
+        fn contains(&self, int: &BigInt) -> bool {
+            *int >= self.min && *int <= self.max
+        }
+    }
+
+    const MAX_INT_LEN: usize = 81;
+
+    let value = value.as_ref();
+    if value.len() > MAX_INT_LEN {
+        return Err(Error::invalid_length(
+            value.len(),
+            &"a decimal integer in range [-2^256, 2^256)",
+        ));
+    }
+
+    let int = if let Some((sign, value)) = value
+        .strip_prefix("-0x")
+        .map(|hex| (num_bigint::Sign::Minus, hex))
+        .or_else(|| {
+            value
+                .strip_prefix("0x")
+                .map(|hex| (num_bigint::Sign::Plus, hex))
+        }) {
+        if value.is_empty() {
+            return Err(Error::custom("empty hex integer"));
+        }
+
+        let Some(magnitude) = BigUint::parse_bytes(value.as_bytes(), 16) else {
+            return Err(Error::custom("invalid hex integer"));
+        };
+        BigInt::from_biguint(sign, magnitude)
+    } else {
+        BigInt::from_str(value).map_err(Error::custom)?
+    };
+
+    if !IntBounds::get().contains(&int) {
+        return Err(Error::custom("integer out of bounds"));
+    }
+    Ok(int)
+}
+
+pub fn parse_cell_mapped<T, F: FnOnce(Cell) -> T, E: serde::de::Error>(
+    value: impl AsRef<str>,
+    f: F,
+) -> Result<T, E> {
+    Boc::decode_base64(value.as_ref())
+        .map(f)
+        .map_err(serde::de::Error::custom)
+}
+
+#[repr(transparent)]
+pub struct LimitStackItems<T>(T);
+
+impl<T> LimitStackItems<T> {
+    pub fn new(data: T, limit: usize) -> Self {
+        STACK_ITEMS_LIMIT.set(limit);
+        Self(data)
+    }
+}
+
+impl LimitStackItems<()> {
+    pub fn use_limit<E: serde::ser::Error>() -> Result<(), E> {
+        let is_limit_ok = STACK_ITEMS_LIMIT.with(|limit| {
+            let current_limit = limit.get();
+            if current_limit > 0 {
+                limit.set(current_limit - 1);
+                true
+            } else {
+                false
+            }
+        });
+
+        if is_limit_ok {
+            Ok(())
+        } else {
+            Err(E::custom("too many stack items in response"))
+        }
+    }
+}
+
+impl<T: serde::ser::Serialize> serde::ser::Serialize for LimitStackItems<T> {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        self.0.serialize(serializer)
+    }
+}
+
+thread_local! {
+    static STACK_ITEMS_LIMIT: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+}
+
+pub fn limit_tuple_depth<E: serde::ser::Error>()
+-> Result<scopeguard::ScopeGuard<(), impl FnOnce(())>, E> {
+    const MAX_DEPTH: usize = 16;
+
+    thread_local! {
+        static DEPTH: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+    }
+
+    let is_depth_ok = DEPTH.with(|depth| {
+        let current_depth = depth.get();
+        if current_depth < MAX_DEPTH {
+            depth.set(current_depth + 1);
+            true
+        } else {
+            false
+        }
+    });
+
+    if !is_depth_ok {
+        return Err(E::custom("too deep stack item"));
+    }
+
+    let guard = scopeguard::guard((), |()| {
+        DEPTH.with(|depth| {
+            depth.set(depth.get() - 1);
+        })
+    });
+
+    Ok(guard)
 }

@@ -37,6 +37,7 @@ Base route `/toncenter/v3`
 * `/transactionsByMessage`
 * `/jetton/masters`
 * `/jetton/wallets`
+* `/runGetMethod`
 
 ## Install
 

@@ -3,24 +3,31 @@ use std::num::NonZeroUsize;
 use std::sync::OnceLock;
 
 use anyhow::{Context, anyhow};
-use axum::extract::rejection::QueryRejection;
+use axum::Json;
+use axum::extract::rejection::{JsonRejection, QueryRejection};
 use axum::extract::{Query, State};
 use axum::http::{self, StatusCode};
 use axum::response::{IntoResponse, Response};
-use axum::routing::get;
+use axum::routing::{get, post};
 use bytes::Bytes;
 use serde::Serialize;
+use tokio::sync::OwnedSemaphorePermit;
 use tycho_rpc::util::mime::APPLICATION_JSON;
-use tycho_rpc::{BriefBlockInfo, RpcSnapshot, RpcState, RpcStateError, TransactionInfo};
+use tycho_rpc::{
+    BriefBlockInfo, LoadedAccountState, RpcSnapshot, RpcState, RpcStateError, RunGetMethodPermit,
+    TransactionInfo,
+};
 use tycho_types::models::{
     BlockId, BlockIdShort, IntAddr, IntMsgInfo, MsgType, ShardIdent, StdAddr,
 };
 use tycho_types::prelude::*;
 use tycho_util::FastHashSet;
+use tycho_util::sync::rayon_run;
 
 use self::models::{Transaction, *};
 use crate::state::TonCenterRpcState;
 use crate::state::models::{GetJettonMastersParams, GetJettonWalletsParams, OrderJettonWalletsBy};
+use crate::util::tonlib_helpers::{LimitStackItems, run_getter};
 
 mod models;
 
@@ -38,6 +45,7 @@ pub fn router() -> axum::Router<TonCenterRpcState> {
         .route("/transactionsByMessage", get(get_transactions_by_message))
         .route("/jetton/masters", get(get_jetton_masters))
         .route("/jetton/wallets", get(get_jetton_wallets))
+        .route("/runGetMethod", post(post_run_get_method))
 }
 
 // === GET /masterchainInfo ===
@@ -1116,6 +1124,99 @@ async fn get_jetton_wallets(
     Ok(ok_to_response(JettonWalletsResponse::new(wallets)))
 }
 
+// === POST /runGetMethod ===
+
+async fn post_run_get_method(
+    State(state): State<RpcState>,
+    body: Result<Json<RunGetMethodRequest>, JsonRejection>,
+) -> Result<Response, ErrorResponse> {
+    let Json(params) = body?;
+    handle_run_get_method(state, params).await
+}
+
+async fn handle_run_get_method(
+    state: RpcState,
+    p: RunGetMethodRequest,
+) -> Result<Response, ErrorResponse> {
+    enum RunMethodError {
+        RpcError(RpcStateError),
+        InvalidParams(tycho_types::error::Error),
+        Internal(tycho_types::error::Error),
+        TooBigStack(usize),
+    }
+
+    let permit = match acquire_getter_permit(&state).await {
+        Ok(permit) => permit,
+        Err(err_response) => return Err(err_response),
+    };
+    let config = &state.config().run_get_method;
+    let gas_limit = config.vm_getter_gas;
+    let max_response_stack_items = config.max_response_stack_items;
+
+    let f = move || {
+        let mut stack = Vec::with_capacity(p.stack.len() + 1);
+        for item in p.stack {
+            let item =
+                tycho_vm::RcStackValue::try_from(item).map_err(RunMethodError::InvalidParams)?;
+            stack.push(item);
+        }
+
+        let (shard_state, timings, mc_ref_handle) = match state
+            .get_account_state(&p.address)
+            .map_err(RunMethodError::RpcError)?
+        {
+            LoadedAccountState::Found {
+                state,
+                timings,
+                mc_ref_handle,
+                ..
+            } => (state, timings, mc_ref_handle),
+            LoadedAccountState::NotFound { .. } => {
+                return Ok((None, RunGetMethodResponse {
+                    gas_used: 0,
+                    exit_code: tycho_vm::VmException::Fatal.as_exit_code(),
+                    stack: None,
+                }));
+            }
+        };
+
+        let res = run_getter(&state, &shard_state, timings, p.method, stack, gas_limit)
+            .map_err(RunMethodError::Internal)?;
+
+        if res.stack.depth() > max_response_stack_items {
+            return Err(RunMethodError::TooBigStack(res.stack.depth()));
+        }
+
+        Ok::<_, RunMethodError>((Some(mc_ref_handle), RunGetMethodResponse {
+            gas_used: res.gas_used,
+            exit_code: res.exit_code,
+            stack: Some(res.stack),
+        }))
+    };
+
+    Ok(rayon_run(move || {
+        let res = match f() {
+            Ok((_mc_ref_handle, res)) => {
+                ok_to_response(LimitStackItems::new(res, max_response_stack_items))
+            }
+            Err(RunMethodError::RpcError(e)) => ErrorResponse::from(e).into_response(),
+            Err(RunMethodError::InvalidParams(e)) => {
+                ErrorResponse::bad_request(format!("invalid stack item: {e}")).into_response()
+            }
+            Err(RunMethodError::Internal(e)) => ErrorResponse::internal(e).into_response(),
+            Err(RunMethodError::TooBigStack(n)) => {
+                ErrorResponse::internal(anyhow!("response stack is too big to send: {n}"))
+                    .into_response()
+            }
+        };
+
+        drop(permit);
+
+        res
+    })
+    .await)
+}
+
 // === Helpers ===
 
 enum ByBlock {
@@ -1188,6 +1289,20 @@ where
     }
 }
 
+async fn acquire_getter_permit(state: &RpcState) -> Result<OwnedSemaphorePermit, ErrorResponse> {
+    match state.acquire_run_get_method_permit().await {
+        RunGetMethodPermit::Acquired(permit) => Ok(permit),
+        RunGetMethodPermit::Disabled => Err(ErrorResponse {
+            status_code: StatusCode::NOT_IMPLEMENTED,
+            error: "method disabled".into(),
+        }),
+        RunGetMethodPermit::Timeout => Err(ErrorResponse {
+            status_code: StatusCode::REQUEST_TIMEOUT,
+            error: "timeout while waiting for VM slot".into(),
+        }),
+    }
+}
+
 #[derive(Debug)]
 struct ErrorResponse {
     status_code: StatusCode,
@@ -1197,6 +1312,13 @@ struct ErrorResponse {
 impl ErrorResponse {
     fn internal<E: Into<anyhow::Error>>(error: E) -> Self {
         RpcStateError::Internal(error.into()).into()
+    }
+
+    fn bad_request<T: Into<Cow<'static, str>>>(msg: T) -> Self {
+        Self {
+            status_code: StatusCode::BAD_REQUEST,
+            error: msg.into(),
+        }
     }
 
     fn not_found<T: Into<Cow<'static, str>>>(msg: T) -> Self {
@@ -1249,5 +1371,14 @@ impl From<RpcStateError> for ErrorResponse {
 impl From<QueryRejection> for ErrorResponse {
     fn from(value: QueryRejection) -> Self {
         Self::from(RpcStateError::BadRequest(value.into()))
+    }
+}
+
+impl From<JsonRejection> for ErrorResponse {
+    fn from(value: JsonRejection) -> Self {
+        Self {
+            status_code: StatusCode::UNPROCESSABLE_ENTITY,
+            error: value.body_text().into(),
+        }
     }
 }
