@@ -283,7 +283,7 @@ define_contract_interface!(JettonMasterInterface {
 });
 
 // TODO: Add support for Solidity ABI
-fn parse_contract_getters(
+pub fn parse_contract_getters(
     code: &DynCell,
     getter_ids: &mut FastHashSet<u64>,
 ) -> Result<(), tycho_types::error::Error> {

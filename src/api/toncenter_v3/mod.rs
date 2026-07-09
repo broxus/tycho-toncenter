@@ -28,6 +28,7 @@ use tycho_util::{FastHashSet, FastHasherState};
 use self::models::{Transaction, *};
 use crate::state::TonCenterRpcState;
 use crate::state::models::{GetJettonMastersParams, GetJettonWalletsParams, OrderJettonWalletsBy};
+use crate::state::parser::parse_contract_getters;
 use crate::util::tonlib_helpers::{LimitStackItems, run_getter};
 
 mod models;
@@ -76,6 +77,7 @@ async fn get_account_states(
         let alloc = Bump::new();
         let mut boc = Vec::new();
         let mut boc_base64 = String::new();
+        let mut getters_dict = FastHashSet::default();
 
         let mut encode_boc = |cell: &Cell| -> &str {
             boc.clear();
@@ -111,6 +113,7 @@ async fn get_account_states(
             let mut code_hash = None;
             let mut data_boc = None;
             let mut code_boc = None;
+            let mut contract_methods: &[u64] = &[];
             let status = match account.state {
                 tycho_types::models::AccountState::Uninit => AccountStatus::Uninit,
                 tycho_types::models::AccountState::Active(state_init) => {
@@ -122,6 +125,13 @@ async fn get_account_states(
                     }
                     if let Some(code) = &state_init.code {
                         code_hash = Some(*code.repr_hash());
+
+                        getters_dict.clear();
+                        if parse_contract_getters(code.as_ref(), &mut getters_dict).is_ok() {
+                            contract_methods =
+                                alloc.alloc_slice_fill_iter(getters_dict.iter().copied());
+                        }
+
                         if query.include_boc {
                             code_boc = Some(encode_boc(code));
                         }
@@ -144,7 +154,7 @@ async fn get_account_states(
                 code_hash,
                 data_boc,
                 code_boc,
-                contract_methods: (),
+                contract_methods,
                 interfaces: [],
             });
         }

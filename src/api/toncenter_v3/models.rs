@@ -32,7 +32,14 @@ pub struct AccountStatesRequest {
     #[serde(default, with = "tonlib_hash_list")]
     pub code_hash: Vec<HashBytes>,
 
+    #[serde(default = "AccountStatesRequest::default_include_boc")]
     pub include_boc: bool,
+}
+
+impl AccountStatesRequest {
+    fn default_include_boc() -> bool {
+        true
+    }
 }
 
 #[derive(Debug, Deserialize)]
@@ -235,13 +242,21 @@ pub struct AccountStatesResponseItem<'a> {
     pub last_transaction_hash: HashBytes,
     #[serde(with = "serde_helpers::string")]
     pub last_transaction_lt: u64,
-    #[serde(with = "serde_helpers::option_tonlib_hash")]
+    #[serde(
+        with = "serde_helpers::option_tonlib_hash",
+        skip_serializing_if = "Option::is_none"
+    )]
     pub data_hash: Option<HashBytes>,
-    #[serde(with = "serde_helpers::option_tonlib_hash")]
+    #[serde(
+        with = "serde_helpers::option_tonlib_hash",
+        skip_serializing_if = "Option::is_none"
+    )]
     pub code_hash: Option<HashBytes>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub data_boc: Option<&'a str>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub code_boc: Option<&'a str>,
-    pub contract_methods: (),
+    pub contract_methods: &'a [u64],
     pub interfaces: [(); 0],
 }
 
