@@ -29,6 +29,7 @@ Base route `/toncenter/v2`
 
 Base route `/toncenter/v3`
 
+* `/accountStates`
 * `/masterchainInfo`
 * `/blocks`
 * `/transactions`
